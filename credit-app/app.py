@@ -527,10 +527,10 @@ def process_pdf_file(uploaded_file):
                 table_settings = {
                     "vertical_strategy": "text", 
                     "horizontal_strategy": "text", 
-                    "snap_tolerance": 10,  # 增大
-                    "join_tolerance": 12,  # 增大
+                    "snap_tolerance": 25,  # 進一步增大
+                    "join_tolerance": 25,  # 進一步增大
                     "edge_min_length": 3, 
-                    "text_tolerance": 5,  # 增大
+                    "text_tolerance": 10,  # 進一步增大
                     "min_words_vertical": 1, 
                     "min_words_horizontal": 1, 
                 }
