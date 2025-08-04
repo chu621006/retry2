@@ -30,6 +30,7 @@ def analyze_student_grades(df):
     """
     GRADUATION_REQUIREMENT = 128 # Set the total graduation requirement
 
+    # Make sure '學分' is numeric, coercing errors to NaN and then filling with 0
     df['學分'] = pd.to_numeric(df['學分'], errors='coerce').fillna(0)
     
     # Ensure GPA column is string before applying parse_gpa_to_numeric
@@ -125,35 +126,40 @@ def main():
 
     uploaded_file = st.file_uploader("上傳成績總表 PDF 檔案", type=["pdf"])
 
+    # 在 try 塊外部初始化 all_grades_data 和 full_grades_df
+    all_grades_data = []
+    full_grades_df = pd.DataFrame() # 預設一個空的DataFrame，防止 NameError
+
     if uploaded_file is not None:
         st.success("檔案上傳成功！正在分析中...")
 
         try:
-            all_grades_data = []
             # 確保欄位名稱與 PDF 中實際提取出的名稱一致
-            # 這些是您 PDF 中表頭可能出現的詞，用於判斷列
             expected_header_keywords = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
             
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                 total_pages = len(pdf.pages)
 
                 for page_num, page in enumerate(pdf.pages):
-                    # 根據經驗，前幾行可能是標題或無關信息，可以裁剪掉
-                    # 謝云瑄成績總表.pdf 的第一頁約 170 pixel 以下是表格開始
-                    # 邱旭廷成績總表.pdf 的第一頁表格位置較低，但第二頁開始就比較固定
-                    # 對不同頁面和文件類型進行不同的裁剪策略
+                    # 調整裁剪策略
+                    top_y_crop = 0 # 預設不裁剪頂部
+                    bottom_y_crop = page.height # 預設不裁剪底部
+
+                    # 根據文件名稱和頁碼調整裁剪
                     if "謝云瑄成績總表.pdf" in uploaded_file.name:
-                        top_y_crop = 170 if page_num == 0 else 50
+                        top_y_crop = 170 if page_num == 0 else 50 # 謝云瑄的PDF第一頁表格開始較低 [cite: 26]
+                        bottom_y_crop = page.height - 30 # 保留底部空間
                     elif "邱旭廷成績總表.pdf" in uploaded_file.name:
-                        top_y_crop = 250 if page_num == 0 else 50 # 邱旭廷的PDF第一頁表頭更低
+                        top_y_crop = 250 if page_num == 0 else 50 # 邱旭廷的PDF第一頁表格開始更低 [cite: 37]
+                        bottom_y_crop = page.height - 30 # 保留底部空間
                     else: # Default for other PDFs
                         top_y_crop = 100 if page_num == 0 else 50
-                        
-                    bottom_y_crop = page.height - 30 # 保留底部30像素用於頁碼/網址，避免影響表格
+                        bottom_y_crop = page.height - 30
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
                     
-                    # 針對 pdfplumber 0.7.0 版本調整 table_settings
+                    # 針對 pdfplumber 0.7.0 版本調整 table_settings，移除 'snap_horizontal', 'snap_vertical'
+                    # 並確保使用 'lines' 策略來處理表格線
                     table_settings = {
                         "vertical_strategy": "lines",
                         "horizontal_strategy": "lines",
@@ -176,11 +182,14 @@ def main():
 
                         # 對每個單元格先轉字串再 strip，並過濾掉完全空行
                         # 在這裡應用 normalize_text
-                        filtered_table = [
-                            [normalize_text(cell) for cell in row]
-                            # 確保行中有非空內容才保留，避免 `NoneType` 錯誤
-                            for row in table if any(str(cell).strip() for cell in row)
-                        ]
+                        filtered_table = []
+                        for row in table:
+                            # 確保每個單元格都被轉換為字串，然後再進行 normalize_text
+                            normalized_row = [normalize_text(cell) for cell in row]
+                            # 檢查行中是否有任何非空內容
+                            if any(cell.strip() for cell in normalized_row):
+                                filtered_table.append(normalized_row)
+                        
                         if not filtered_table:
                             continue
                         
@@ -189,13 +198,21 @@ def main():
                         header_row_start_idx = -1 # 初始化為-1，表示數據從第0行開始
 
                         # 尋找表頭：檢查前幾行是否包含關鍵字
-                        potential_header_search_range = min(len(filtered_table), 5)
+                        potential_header_search_range = min(len(filtered_table), 5) # 最多檢查前5行
                         for h_idx in range(potential_header_search_range):
-                            h_row_cells = [cell for cell in filtered_table[h_idx]] # 已經過 normalize_text
+                            h_row_cells = [cell.strip() for cell in filtered_table[h_idx]] # 已經過 normalize_text
                             
                             # 檢查是否有足夠的關鍵字來識別為表頭
                             # 至少包含 "學年度", "科目名稱", "學分", "GPA"
-                            if all(any(kw in cell for cell in h_row_cells) for kw in ["學年度", "科目名稱", "學分", "GPA"]):
+                            # 使用更寬鬆的匹配，例如 "學年" 包含 "學年度"
+                            header_match_criteria = [
+                                any("學年" in cell for cell in h_row_cells), # 兼容 "學年度" 和 "學年"
+                                any("科目名稱" in cell for cell in h_row_cells),
+                                any("學分" in cell for cell in h_row_cells),
+                                any("GPA" in cell for cell in h_row_cells)
+                            ]
+
+                            if all(header_match_criteria):
                                 header = h_row_cells
                                 header_row_found = True
                                 header_row_start_idx = h_idx
@@ -204,6 +221,7 @@ def main():
                         # 如果沒有找到明確的表頭，嘗試將預期列作為表頭，並假設數據從第一行開始
                         if not header_row_found:
                             # 檢查第一行數據是否像成績數據（學年度是3位數字）
+                            # 假設第一列是學年度
                             if len(filtered_table[0]) > 0 and filtered_table[0][0].isdigit() and len(filtered_table[0][0]) == 3:
                                 header = expected_header_keywords # 假設列順序與預期一致
                                 header_row_start_idx = -1 # 表示數據從 filtered_table[0] 開始
@@ -215,16 +233,17 @@ def main():
                         col_to_index = {}
                         for i, h_text in enumerate(header):
                             # 使用更靈活的判斷，確保能匹配多行表頭的關鍵字
-                            if "學年度" in h_text.replace(' ', ''): col_to_index["學年度"] = i
-                            elif "學期" in h_text.replace(' ', ''): col_to_index["學期"] = i
-                            elif "選課代號" in h_text.replace(' ', ''): col_to_index["選課代號"] = i
-                            elif "科目名稱" in h_text.replace(' ', ''): col_to_index["科目名稱"] = i
-                            elif "學分" in h_text.replace(' ', ''): col_to_index["學分"] = i
-                            elif "GPA" in h_text.replace(' ', ''): col_to_index["GPA"] = i
+                            if "學年" in h_text: col_to_index["學年度"] = i
+                            elif "學期" in h_text: col_to_index["學期"] = i
+                            elif "選課代號" in h_text: col_to_index["選課代號"] = i
+                            elif "科目名稱" in h_text: col_to_index["科目名稱"] = i
+                            elif "學分" in h_text: col_to_index["學分"] = i
+                            elif "GPA" in h_text: col_to_index["GPA"] = i
 
                         # 檢查是否找到所有關鍵列
                         critical_cols = ["學年度", "科目名稱", "學分", "GPA"]
                         if not all(col in col_to_index for col in critical_cols):
+                            st.warning(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 缺少關鍵列。跳過此表格。")
                             continue # 如果缺少關鍵列，則跳過此表格
 
                         # 獲取關鍵列的索引 (使用 .get() 確保安全，如果沒有找到則為 None)
@@ -238,26 +257,29 @@ def main():
                         # 構建新的數據行
                         processed_rows = []
                         # current_row_data_temp 儲存當前正在處理的行數據，用於合併跨行內容
-                        current_row_data_temp = [None] * len(expected_header_keywords) 
+                        # 初始化為預期列數的空字串列表
+                        current_row_data_temp = [""] * len(expected_header_keywords) 
 
                         # 確定從 filtered_table 的哪一行開始處理數據
                         data_rows_to_process = filtered_table[header_row_start_idx + 1:] if header_row_start_idx != -1 else filtered_table[:]
 
                         for row_num_in_table, row_cells in enumerate(data_rows_to_process):
                             # 過濾掉只包含空字串或 None 的行
-                            if not any(cell.strip() for cell in row_cells):
+                            if not any(str(cell).strip() for cell in row_cells):
                                 continue
 
                             # 確保行足夠長，避免索引越界
                             # 如果行太短，則用空字串填充，避免 IndexError
-                            row_cells_padded = row_cells + [''] * (max(len(expected_header_keywords), max(col_to_index.values() if col_to_index else [0])) - len(row_cells))
+                            max_idx = max(col_to_index.values()) if col_to_index else 0
+                            row_cells_padded = row_cells + [''] * (max_idx + 1 - len(row_cells))
 
                             # 獲取關鍵列的值
-                            學年度_val = row_cells_padded[學年度_idx] if 學年度_idx is not None else ''
-                            選課代號_val = row_cells_padded[選課代號_idx] if 選課代號_idx is not None else ''
-                            科目名稱_val = row_cells_padded[科目名稱_idx] if 科目名稱_idx is not None else ''
-                            學分_val = row_cells_padded[學分_idx] if 學分_idx is not None else ''
-                            GPA_val = row_cells_padded[GPA_idx] if GPA_idx is not None else ''
+                            # 使用安全的索引訪問，如果索引不存在則為空字串
+                            學年度_val = row_cells_padded[學年度_idx] if 學年度_idx is not None and 學年度_idx < len(row_cells_padded) else ''
+                            選課代號_val = row_cells_padded[選課代號_idx] if 選課代號_idx is not None and 選課代號_idx < len(row_cells_padded) else ''
+                            科目名稱_val = row_cells_padded[科目名稱_idx] if 科目名稱_idx is not None and 科目名稱_idx < len(row_cells_padded) else ''
+                            學分_val = row_cells_padded[學分_idx] if 學分_idx is not None and 學分_idx < len(row_cells_padded) else ''
+                            GPA_val = row_cells_padded[GPA_idx] if GPA_idx is not None and GPA_idx < len(row_cells_padded) else ''
 
                             # 判斷是否為新成績行
                             # 新行的標誌：學年度是3位數字 AND 選課代號或科目名稱不為空
@@ -268,6 +290,7 @@ def main():
                             
                             if is_new_grade_row:
                                 # 如果是新成績行，則將上一行的累積數據添加到 processed_rows
+                                # 只有當 current_row_data_temp 包含有效數據時才添加
                                 if current_row_data_temp and any(x is not None and str(x).strip() for x in current_row_data_temp):
                                     processed_rows.append(current_row_data_temp[:]) # 添加副本
                                 
@@ -276,7 +299,7 @@ def main():
 
                                 # 填充新行的數據
                                 if 學年度_idx is not None: current_row_data_temp[expected_header_keywords.index("學年度")] = 學年度_val
-                                if 學期_idx is not None: current_row_data_temp[expected_header_keywords.index("學期")] = (row_cells_padded[學期_idx] if 學期_idx is not None else '')
+                                if 學期_idx is not None: current_row_data_temp[expected_header_keywords.index("學期")] = (row_cells_padded[學期_idx] if 學期_idx is not None and 學期_idx < len(row_cells_padded) else '')
                                 if 選課代號_idx is not None: current_row_data_temp[expected_header_keywords.index("選課代號")] = 選課代號_val
                                 if 科目名稱_idx is not None: current_row_data_temp[expected_header_keywords.index("科目名稱")] = 科目名稱_val
                                 if 學分_idx is not None: current_row_data_temp[expected_header_keywords.index("學分")] = 學分_val
@@ -297,29 +320,32 @@ def main():
 
                                 # 合併科目名稱
                                 if is_continuation_candidate and 科目名稱_val.strip() != '':
-                                    current_subject_name = current_row_data_temp[expected_header_keywords.index("科目名稱")]
+                                    current_subject_name_index = expected_header_keywords.index("科目名稱")
+                                    current_subject_name = current_row_data_temp[current_subject_name_index]
                                     if current_subject_name.strip() == "": # 如果當前科目名稱為空
-                                        current_row_data_temp[expected_header_keywords.index("科目名稱")] = 科目名稱_val
+                                        current_row_data_temp[current_subject_name_index] = 科目名稱_val
                                     else: # 如果不為空則附加
-                                        current_row_data_temp[expected_header_keywords.index("科目名稱")] += " " + 科目名稱_val
+                                        current_row_data_temp[current_subject_name_index] += " " + 科目名稱_val
                                 
                                 # 合併學分和GPA，並優先處理 `parse_gpa_credit_from_combined_cell`
                                 if is_continuation_candidate and (學分_val.strip() != '' or GPA_val.strip() != ''):
                                     merged_gpa, merged_credit = parse_gpa_credit_from_combined_cell(GPA_val, 學分_val)
                                     
+                                    credit_index = expected_header_keywords.index("學分")
+                                    gpa_index = expected_header_keywords.index("GPA")
+
                                     # 如果學分是數字且大於0，則更新
                                     if merged_credit.replace('.', '').isdigit() and float(merged_credit) > 0:
-                                        current_row_data_temp[expected_header_keywords.index("學分")] = merged_credit
+                                        current_row_data_temp[credit_index] = merged_credit
                                     # 否則，如果當前行學分是空但新提取的非空，則更新
-                                    elif current_row_data_temp[expected_header_keywords.index("學分")].strip() == "" and 學分_val.strip() != "":
-                                        current_row_data_temp[expected_header_keywords.index("學分")] = 學分_val
+                                    elif current_row_data_temp[credit_index].strip() == "" and 學分_val.strip() != "":
+                                        current_row_data_temp[credit_index] = 學分_val
                                     
                                     # 如果 GPA 像個成績等級，則更新
                                     if merged_gpa.strip() != '' and (merged_gpa.isalpha() or merged_gpa in ['抵免', '通過']):
-                                        current_row_data_temp[expected_header_keywords.index("GPA")] = merged_gpa
-                                    elif current_row_data_temp[expected_header_keywords.index("GPA")].strip() == "" and GPA_val.strip() != "":
-                                        current_row_data_temp[expected_header_keywords.index("GPA")] = GPA_val
-
+                                        current_row_data_temp[gpa_index] = merged_gpa
+                                    elif current_row_data_temp[gpa_index].strip() == "" and GPA_val.strip() != "":
+                                        current_row_data_temp[gpa_index] = GPA_val
 
                         # 處理表格的最後一行
                         if current_row_data_temp and any(x is not None and str(x).strip() for x in current_row_data_temp): 
@@ -341,27 +367,31 @@ def main():
                 st.warning("未能從 PDF 中提取有效的成績數據。請檢查 PDF 格式或調整表格提取設定。")
                 # 即使沒有數據，也創建一個空的 DataFrame 以免後續報錯
                 full_grades_df = pd.DataFrame(columns=expected_header_keywords)
-                return
+            else:
+                full_grades_df = pd.concat(all_grades_data, ignore_index=True)
 
-            full_grades_df = pd.concat(all_grades_data, ignore_index=True)
+                # 再次清理整個DataFrame，確保沒有完全空行，並且根據學年度篩選
+                full_grades_df.dropna(how='all', inplace=True)
+                
+                # 使用更嚴格的學年度篩選，確保是三位數字
+                # 並清理選課代號中的None或空字串
+                if '學年度' in full_grades_df.columns and '選課代號' in full_grades_df.columns:
+                    full_grades_df = full_grades_df[
+                        full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') &
+                        (full_grades_df['選課代號'].astype(str).str.strip() != '') # 確保選課代號不為空
+                    ]
 
-            # 再次清理整個DataFrame，確保沒有完全空行，並且根據學年度篩選
-            full_grades_df.dropna(how='all', inplace=True)
-            
-            # 使用更嚴格的學年度篩選，確保是三位數字
-            # 並清理選課代號中的None或空字串
-            full_grades_df = full_grades_df[
-                full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') &
-                (full_grades_df['選課代號'].astype(str).str.strip() != '') # 確保選課代號不為空
-            ]
-
-            # 過濾勞作成績，確保科目名稱列存在
-            if '科目名稱' in full_grades_df.columns:
-                full_grades_df = full_grades_df[~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)]
-            
-            # 確保 GPA 列是字串類型並清理空白
-            full_grades_df['GPA'] = full_grades_df['GPA'].astype(str).str.strip()
-            full_grades_df['學分'] = pd.to_numeric(full_grades_df['學分'], errors='coerce').fillna(0)
+                # 過濾勞作成績，確保科目名稱列存在
+                if '科目名稱' in full_grades_df.columns:
+                    full_grades_df = full_grades_df[~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)]
+                
+                # 確保 GPA 列是字串類型並清理空白
+                if 'GPA' in full_grades_df.columns:
+                    full_grades_df['GPA'] = full_grades_df['GPA'].astype(str).str.strip()
+                
+                # 確保 學分 列是數字類型並處理非數字
+                if '學分' in full_grades_df.columns:
+                    full_grades_df['學分'] = pd.to_numeric(full_grades_df['學分'], errors='coerce').fillna(0)
 
 
             if not full_grades_df.empty:
