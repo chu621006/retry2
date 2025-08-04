@@ -436,7 +436,7 @@ def calculate_total_credits(df_list):
                                             course_name = temp_name_prev_col
                                             
                                 # If still "未知科目", check column to the right (less common for subject, but possible)
-                                if course_name == "未知科目" and current_col_idx < len(df.columns) - 1:
+                                if course_col_idx < len(df.columns) - 1: # Fixed typo: changed current_col_idx to course_col_idx
                                     next_col_name = df.columns[current_col_idx + 1]
                                     if next_col_name in row and pd.notna(row[next_col_name]):
                                         temp_name_next_col = normalize_text(row[next_col_name])
@@ -560,42 +560,70 @@ def process_pdf_file(uploaded_file):
                         if not processed_table:
                             st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
                             continue
+                        
+                        df_table_to_add = None
 
-                        # 確保表格至少有1行，並且列數合理
-                        # 這裡放寬了判斷，只要有數據就嘗試處理，讓 is_grades_table 去判斷是否為成績單
-                        if len(processed_table) > 0 and len(processed_table[0]) >= 3: 
-                            header_row = processed_table[0]
-                            data_rows = processed_table[1:]
-                        else:
-                            st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 結構不完整或行數不足，已跳過。")
-                            continue
+                        # --- 新增的彈性表頭判斷邏輯 ---
+                        # 嘗試將第一行作為表頭
+                        potential_header_row = processed_table[0]
+                        temp_unique_columns = make_unique_columns(potential_header_row)
+                        temp_data_rows = processed_table[1:]
 
-                        unique_columns = make_unique_columns(header_row)
-
-                        if data_rows:
-                            num_columns_header = len(unique_columns)
-                            cleaned_data_rows = []
-                            for row in data_rows:
-                                if len(row) > num_columns_header:
-                                    cleaned_data_rows.append(row[:num_columns_header])
-                                elif len(row) < num_columns_header: 
-                                    cleaned_data_rows.append(row + [''] * (num_columns_header - len(row)))
+                        # 確保至少有數據行才嘗試生成 DataFrame
+                        if len(processed_table) > 1: # 至少有表頭和一行數據
+                            num_cols_for_df = len(temp_unique_columns)
+                            cleaned_temp_data_rows = []
+                            for row in temp_data_rows:
+                                if len(row) > num_cols_for_df:
+                                    cleaned_temp_data_rows.append(row[:num_cols_for_df])
+                                elif len(row) < num_cols_for_df: 
+                                    cleaned_temp_data_rows.append(row + [''] * (num_cols_for_df - len(row)))
                                 else:
-                                    cleaned_data_rows.append(row)
+                                    cleaned_temp_data_rows.append(row)
 
-                            try:
-                                df_table = pd.DataFrame(cleaned_data_rows, columns=unique_columns)
-                                if is_grades_table(df_table):
-                                    all_grades_data.append(df_table)
-                                    st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格並已處理。")
+                            if cleaned_temp_data_rows:
+                                try:
+                                    df_table_with_assumed_header = pd.DataFrame(cleaned_temp_data_rows, columns=temp_unique_columns)
+                                    # 如果假設表頭的 DataFrame 被識別為成績單表格，則採用此方式
+                                    if is_grades_table(df_table_with_assumed_header):
+                                        df_table_to_add = df_table_with_assumed_header
+                                        st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (包含明確表頭)。")
+                                except Exception as e_df_temp:
+                                    st.warning(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用第一行作表頭轉換時發生錯誤: `{e_df_temp}`，將嘗試其他方式。")
+                        
+                        # 如果上一步未能識別為成績單表格 (或只有一行數據)，則嘗試將所有行都作為數據
+                        if df_table_to_add is None:
+                            max_cols = max(len(row) for row in processed_table)
+                            # 生成通用欄位名稱，例如 Column_1, Column_2 ...
+                            generic_columns = make_unique_columns([f"Column_{i+1}" for i in range(max_cols)])
+
+                            cleaned_all_rows_data = []
+                            for row in processed_table:
+                                if len(row) > max_cols:
+                                    cleaned_all_rows_data.append(row[:max_cols])
+                                elif len(row) < max_cols:
+                                    cleaned_all_rows_data.append(row + [''] * (max_cols - len(row)))
                                 else:
-                                    st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} (表頭範例: {header_row}) 未識別為成績單表格，已跳過。")
-                            except Exception as e_df:
-                                st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 轉換為 DataFrame 時發生錯誤: `{e_df}`")
-                                st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
-                                st.error(f"生成的唯一欄位名稱: {unique_columns}")
-                        else:
-                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有數據行。")
+                                    cleaned_all_rows_data.append(row)
+                            
+                            if cleaned_all_rows_data:
+                                try:
+                                    df_table_all_data = pd.DataFrame(cleaned_all_rows_data, columns=generic_columns)
+                                    if is_grades_table(df_table_all_data):
+                                        df_table_to_add = df_table_all_data
+                                        st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (無明確表頭，所有行皆為數據)。")
+                                    else:
+                                        st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 未能識別為成績單表格，已跳過。")
+                                except Exception as e_df_all:
+                                    st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用所有行作數據轉換為 DataFrame 時發生錯誤: `{e_df_all}`")
+                                    st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
+                                    st.error(f"生成的唯一欄位名稱: {generic_columns}")
+                            else:
+                                st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有數據行。")
+                        # --- 彈性表頭判斷邏輯結束 ---
+
+                        if df_table_to_add is not None:
+                            all_grades_data.append(df_table_to_add)
 
                 except Exception as e_table:
                     st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
