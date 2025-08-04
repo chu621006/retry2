@@ -148,24 +148,27 @@ def main():
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
                             cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
                             
-                            debug_messages.append(f"    原始數據行 {row_num_in_table}: {row}") # 打印原始行
-                            debug_messages.append(f"    清洗後數據行 {row_num_in_table}: {cleaned_row}") # 打印清洗後行
+                            debug_messages.append(f"    原始數據行 {row_num_in_table}: {row}") 
+                            debug_messages.append(f"    清洗後數據行 {row_num_in_table}: {cleaned_row}") 
 
                             is_new_grade_row = False
                             if 學年度_idx is not None and len(cleaned_row) > 學年度_idx:
                                 # 檢查學年度是否為數字且長度為3，且不為空字串
                                 if cleaned_row[學年度_idx].isdigit() and len(cleaned_row[學年度_idx]) == 3:
                                     is_new_grade_row = True
-                                # 增加對 "抵免" 或 "通過" 的學年度判斷，但通常它們不在學年度列
-                                # 這裡的邏輯是基於學年度列的，不需要特別為抵免調整
-                                # 只需要確保不是空行
-                                elif cleaned_row[學年度_idx].strip() == '': # 如果學年度為空，可能是續行或垃圾行
-                                    pass # 讓它進入續行判斷
+                                # Add a flexible check for the "學年度" column if it's not a digit but has text,
+                                # to handle potential non-numeric entries at the start of a row that might not be a valid year
+                                elif cleaned_row[學年度_idx].strip() != '' and not cleaned_row[學年度_idx].isdigit():
+                                    debug_messages.append(f"      Warning: 學年度 column has non-digit content: '{cleaned_row[學年度_idx]}'. Skipping as new row start.")
+                                    # If it's not a digit, it's likely not a new grade entry for the year.
+                                    # This ensures we don't start a new row with misparsed headers or other text.
+                                    pass # do nothing, let it fall through to continuation or ignored row
 
                             if is_new_grade_row:
                                 if current_row_data:
                                     processed_rows.append(current_row_data)
                                 current_row_data = list(cleaned_row)
+                                debug_messages.append(f"      -> 新的成績行開始: {current_row_data}")
                             elif current_row_data: # 是續行或空行
                                 # 判斷是否為「科目名稱」的續行 (學年度為空，且科目名稱有內容)
                                 is_subject_continuation = (科目名稱_idx is not None and 
@@ -179,18 +182,23 @@ def main():
                                 
                                 if is_subject_continuation:
                                     current_row_data[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
+                                    debug_messages.append(f"      -> 科目名稱續行合併: {current_row_data}")
                                 elif is_gpa_continuation:
                                     current_row_data[GPA_idx] += " " + cleaned_row[GPA_idx]
+                                    debug_messages.append(f"      -> GPA續行合併: {current_row_data}")
                                 elif not any(c.strip() for c in cleaned_row): # 如果是完全空白的行，結束當前行處理
                                     if current_row_data:
                                         processed_rows.append(current_row_data)
                                     current_row_data = None
+                                    debug_messages.append(f"      -> 檢測到空白行，結束當前行。")
                                 else: # 不符合新行或續行的模式，但也不是完全空白，可能是其他雜訊，結束當前行處理
                                     if current_row_data:
                                         processed_rows.append(current_row_data)
                                     current_row_data = None
+                                    debug_messages.append(f"      -> 不符合模式的雜訊行，結束當前行。")
                             else: # current_row_data 為 None，且不是新行，直接忽略
-                                pass # 繼續尋找下一個新行
+                                debug_messages.append(f"      -> 未開始新行且非續行，跳過。")
+                                pass 
 
                         if current_row_data: 
                             processed_rows.append(current_row_data)
@@ -213,7 +221,7 @@ def main():
 
                             all_grades_data.append(df_table)
                         else:
-                            debug_messages.append(f"  此表格未能提取到任何有效數據行。") # 新增此行
+                            debug_messages.append(f"  此表格未能提取到任何有效數據行。")
 
                     debug_info_placeholder.text("\n".join(debug_messages)) 
 
