@@ -64,7 +64,7 @@ def main():
                 for page_num, page in enumerate(pdf.pages):
                     debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
 
-                    top_y_crop = 60 # 從Y=60開始，確保捕捉到所有表格
+                    top_y_crop = 60 
                     bottom_y_crop = page.height 
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
@@ -94,36 +94,21 @@ def main():
                             debug_messages.append(f"  表格 {table_idx + 1} 無效 (行數不足或為空)。")
                             continue
 
-                        # 嘗試在表格的前幾行中找到表頭，並使其更具彈性
                         potential_header_rows = table[0:min(len(table), 5)] 
                         header_row_found = False
                         header = []
                         header_row_start_idx = -1 
 
-                        # 定義關鍵表頭詞，用於彈性匹配
-                        key_headers = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
-
                         for h_idx, h_row in enumerate(potential_header_rows):
-                            # 清理每個單元格，並將其連接成一個字符串，以便進行子字符串匹配
-                            cleaned_h_row_str = " ".join([col.replace('\n', ' ').strip() if col is not None else "" for col in h_row])
-                            cleaned_h_row_list = [col.replace('\n', ' ').strip() if col is not None else "" for col in h_row] # 保持列表形式用於直接匹配
+                            cleaned_h_row_list = [col.replace('\n', ' ').strip() if col is not None else "" for col in h_row]
 
-                            # 判斷是否包含所有關鍵詞 (不一定在同一個單元格，但關鍵詞必須都在這行中)
-                            # 使用 all() 和 any() 組合來檢查關鍵詞是否在列中，更靈活
                             is_potential_header = True
-                            for kw in ["學年度", "科目名稱", "學分", "GPA"]: # 僅檢查幾個最重要的關鍵詞
+                            for kw in ["學年度", "科目名稱", "學分", "GPA"]: 
                                 if not any(kw in cell for cell in cleaned_h_row_list):
                                     is_potential_header = False
                                     break
                             
-                            # 額外判斷：確保這行看起來像表頭而不是數據行
-                            # 例如，表頭的單元格通常是簡短的描述性文字，而不會是像 '111' 這樣的純數字開頭的學年度
-                            # 這個判斷需要小心，因為它可能會過濾掉真實的表頭
-                            # 更好的方法是檢查這行是否有足夠的非數字內容，或者檢查下一行是否符合數據行模式
-                            # 目前先不加複雜判斷，依賴關鍵詞匹配
-
                             if is_potential_header:
-                                # 確定是表頭後，使用原始的 cleaned_h_row_list 作為 header，因為它的結構最接近
                                 header = cleaned_h_row_list
                                 header_row_found = True
                                 header_row_start_idx = h_idx 
@@ -138,7 +123,6 @@ def main():
                         col_to_index = {} 
                         index_to_col = {} 
 
-                        # 使用更靈活的方式來映射列名到索引
                         for i, h_ext in enumerate(header):
                             if "學年度" in h_ext: col_to_index["學年度"] = i; index_to_col[i] = "學年度"
                             elif "學期" in h_ext: col_to_index["學期"] = i; index_to_col[i] = "學期"
@@ -164,25 +148,49 @@ def main():
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
                             cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
                             
-                            # 判斷是否為新的一行成績記錄：檢查「學年度」列是否有三位數字
-                            if 學年度_idx is not None and len(cleaned_row) > 學年度_idx and cleaned_row[學年度_idx].isdigit() and len(cleaned_row[學年度_idx]) == 3:
+                            debug_messages.append(f"    原始數據行 {row_num_in_table}: {row}") # 打印原始行
+                            debug_messages.append(f"    清洗後數據行 {row_num_in_table}: {cleaned_row}") # 打印清洗後行
+
+                            is_new_grade_row = False
+                            if 學年度_idx is not None and len(cleaned_row) > 學年度_idx:
+                                # 檢查學年度是否為數字且長度為3，且不為空字串
+                                if cleaned_row[學年度_idx].isdigit() and len(cleaned_row[學年度_idx]) == 3:
+                                    is_new_grade_row = True
+                                # 增加對 "抵免" 或 "通過" 的學年度判斷，但通常它們不在學年度列
+                                # 這裡的邏輯是基於學年度列的，不需要特別為抵免調整
+                                # 只需要確保不是空行
+                                elif cleaned_row[學年度_idx].strip() == '': # 如果學年度為空，可能是續行或垃圾行
+                                    pass # 讓它進入續行判斷
+
+                            if is_new_grade_row:
                                 if current_row_data:
                                     processed_rows.append(current_row_data)
                                 current_row_data = list(cleaned_row)
-                            elif current_row_data and 學年度_idx is not None and len(cleaned_row) > 學年度_idx and cleaned_row[學年度_idx] == '':
+                            elif current_row_data: # 是續行或空行
                                 # 判斷是否為「科目名稱」的續行 (學年度為空，且科目名稱有內容)
-                                if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and cleaned_row[科目名稱_idx] != '':
+                                is_subject_continuation = (科目名稱_idx is not None and 
+                                                           len(cleaned_row) > 科目名稱_idx and 
+                                                           cleaned_row[科目名稱_idx].strip() != '')
+                                
+                                # 處理 GPA 欄位多行合併的續行
+                                is_gpa_continuation = (GPA_idx is not None and 
+                                                       len(cleaned_row) > GPA_idx and 
+                                                       cleaned_row[GPA_idx].strip() != '')
+                                
+                                if is_subject_continuation:
                                     current_row_data[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
-                                elif GPA_idx is not None and len(cleaned_row) > GPA_idx and cleaned_row[GPA_idx] != '':
+                                elif is_gpa_continuation:
                                     current_row_data[GPA_idx] += " " + cleaned_row[GPA_idx]
-                                else: 
+                                elif not any(c.strip() for c in cleaned_row): # 如果是完全空白的行，結束當前行處理
                                     if current_row_data:
                                         processed_rows.append(current_row_data)
                                     current_row_data = None
-                            else: # 不符合新行或續行的模式，直接忽略並結束當前行處理
-                                if current_row_data:
-                                    processed_rows.append(current_row_data)
-                                current_row_data = None
+                                else: # 不符合新行或續行的模式，但也不是完全空白，可能是其他雜訊，結束當前行處理
+                                    if current_row_data:
+                                        processed_rows.append(current_row_data)
+                                    current_row_data = None
+                            else: # current_row_data 為 None，且不是新行，直接忽略
+                                pass # 繼續尋找下一個新行
 
                         if current_row_data: 
                             processed_rows.append(current_row_data)
@@ -204,7 +212,9 @@ def main():
                                 df_table[col] = df_table[col].astype(str).str.strip().replace('None', '').replace('nan', '')
 
                             all_grades_data.append(df_table)
-                    
+                        else:
+                            debug_messages.append(f"  此表格未能提取到任何有效數據行。") # 新增此行
+
                     debug_info_placeholder.text("\n".join(debug_messages)) 
 
             if not all_grades_data:
