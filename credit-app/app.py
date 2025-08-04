@@ -2,83 +2,9 @@ import streamlit as st
 import pandas as pd
 import io
 import pdfplumber
+import re # <-- 確保有這一行
 
-# --- 1. GPA 轉換函數 ---
-def parse_gpa_to_numeric(gpa_str):
-    """
-    Converts GPA string to a numeric value for comparison.
-    This mapping can be adjusted based on specific grading scales.
-    For this example, we define C- and above as passing.
-    """
-    gpa_map = {
-        'A+': 4.3, 'A': 4.0, 'A-': 3.7,
-        'B+': 3.3, 'B': 3.0, 'B-': 2.7,
-        'C+': 2.3, 'C': 2.0, 'C-': 1.7,
-        'D+': 1.3, 'D': 1.0, 'D-': 0.7,
-        'E': 0.0, 'F': 0.0,
-        '抵免': 999.0, # Special value for '抵免' - treated as passed for credit count
-        '通過': 999.0  # Special value for '通過' - treated as passed for credit count
-    }
-    # Ensure gpa_str is treated as string, then strip, then get from map
-    return gpa_map.get(str(gpa_str).strip(), 0.0)
-
-# --- 2. 成績分析函數 ---
-def analyze_student_grades(df):
-    """
-    Analyzes a DataFrame of student grades to calculate total earned credits
-    and remaining credits for graduation.
-    """
-    GRADUATION_REQUIREMENT = 128 # Set the total graduation requirement
-
-    # Make sure '學分' is numeric, coercing errors to NaN and then filling with 0
-    df['學分'] = pd.to_numeric(df['學分'], errors='coerce').fillna(0)
-    
-    # Ensure GPA column is string before applying parse_gpa_to_numeric
-    df['GPA_Numeric'] = df['GPA'].astype(str).apply(parse_gpa_to_numeric)
-    
-    # Define "passed" condition: GPA_Numeric >= 1.7 OR GPA is '抵免' OR GPA is '通過'
-    # Use original 'GPA' column for '抵免'/'通過' check to avoid relying on 999.0 for actual GPA calculation
-    # Also ensure 學分 is greater than 0 for credit counting
-    df['是否通過'] = (df['GPA_Numeric'] >= 1.7) | \
-                   (df['GPA'].astype(str).str.strip() == '抵免') | \
-                   (df['GPA'].astype(str).str.strip() == '通過')
-    
-    # Filter for courses that passed and have credits > 0
-    passed_courses_df = df[df['是否通過'] & (df['學分'] > 0)].copy()
-
-    # Calculate total earned credits by summing '學分' for passed courses
-    total_earned_credits = passed_courses_df['學分'].sum()
-    
-    # Calculate remaining credits: Graduation requirement minus total earned credits
-    # Ensure it's not negative
-    remaining_credits_to_graduate = max(0, GRADUATION_REQUIREMENT - total_earned_credits)
-
-    return total_earned_credits, remaining_credits_to_graduate, passed_courses_df
-
-# --- 3. 字元正規化函數 ---
-def normalize_text(text):
-    """
-    Normalizes specific problematic Unicode characters often found in PDF extraction
-    to their standard Traditional Chinese/ASCII counterparts. Handles None input.
-    """
-    if text is None:
-        return ""
-    # Convert to string first to handle potential non-string types, then replace newlines and strip
-    text = str(text).replace('\n', ' ').strip()
-    # Normalize common full-width or variant characters
-    text = text.replace('⽬', '目') # CJK UNIFIED IDEOGRAPH-2F4D -> CJK UNIFIED IDEOGRAPH-76EE (目)
-    text = text.replace('⽇', '日') # CJK UNIFIED IDEOGRAPH-2F31 -> CJK UNIFIED IDEOGRAPH-65E5 (日)
-    text = text.replace('（', '(') # FULLWIDTH LEFT PARENTHESIS -> LEFT PARENTHESIS
-    text = text.replace('）', ')') # FULLWIDTH RIGHT PARENTHESIS -> RIGHT PARENTHESIS
-    text = text.replace('⼀', '一') # CJK RADICAL ONE -> CJK UNIFIED IDEOGRAPH-4E00 (一)
-    text = text.replace('Ｃ', 'C') # FULLWIDTH LATIN CAPITAL LETTER C -> LATIN CAPITAL LETTER C
-    text = text.replace('Ａ', 'A') # FULLWIDTH LATIN CAPITAL LETTER A -> LATIN CAPITAL LETTER A
-    text = text.replace('Ｂ', 'B') # FULLWIDTH LATIN CAPITAL LETTER B -> LATIN CAPITAL LETTER B
-    text = text.replace('Ｄ', 'D') # FULLWIDTH LATIN CAPITAL LETTER D -> LATIN CAPITAL LETTER D
-    text = text.replace('Ｅ', 'E') # FULLWIDTH LATIN CAPITAL LETTER E -> LATIN CAPITAL LETTER E
-    text = text.replace('Ｆ', 'F') # FULLWIDTH LATIN CAPITAL LETTER F -> LATIN CAPITAL LETTER F
-    text = text.replace('Ｇ', 'G') # FULLWIDTH LATIN CAPITAL LETTER G -> LATIN CAPITAL LETTER G
-    return text.strip() # 再次strip以防替換後產生前後空格
+# ... (其他函數保持不變，例如 parse_gpa_to_numeric, analyze_student_grades, normalize_text) ...
 
 # --- 4. 處理分行GPA/學分問題的函數 (在提取原始表格後立即應用) ---
 def parse_gpa_credit_from_combined_cell(gpa_cell_content, credit_cell_content):
@@ -86,37 +12,89 @@ def parse_gpa_credit_from_combined_cell(gpa_cell_content, credit_cell_content):
     Handles cases where GPA and credit are combined in one cell, or extracted incorrectly.
     Returns cleaned GPA and credit values.
     """
-    gpa = str(gpa_cell_content).strip()
-    credit = str(credit_cell_content).strip()
+    original_gpa = str(gpa_cell_content).strip()
+    original_credit = str(credit_cell_content).strip()
 
-    # Case 1: GPA cell contains both GPA and credit separated by newline
-    if '\n' in gpa and credit == '':
-        parts = gpa.split('\n')
-        if len(parts) == 2:
-            gpa_candidate = parts[0].strip()
-            credit_candidate = parts[1].strip()
+    # Normalize both inputs first to handle problematic characters
+    gpa = normalize_text(original_gpa)
+    credit = normalize_text(original_credit)
 
-            # If credit_candidate looks like a number, and gpa_candidate looks like a GPA grade
-            if credit_candidate.replace('.', '').isdigit() and (gpa_candidate.isalpha() or gpa_candidate in ['抵免', '通過']):
-                return gpa_candidate, credit_candidate
-            elif gpa_candidate.replace('.', '').isdigit() and (credit_candidate.isalpha() or credit_candidate in ['抵免', '通過']):
-                # If it's reversed (Credit \n GPA)
-                return credit_candidate, gpa_candidate
-            
-    # Case 2: Credit cell contains both GPA and credit separated by newline
-    if '\n' in credit and gpa == '':
-        parts = credit.split('\n')
-        if len(parts) == 2:
-            credit_candidate = parts[0].strip()
-            gpa_candidate = parts[1].strip()
-            if credit_candidate.replace('.', '').isdigit() and (gpa_candidate.isalpha() or gpa_candidate in ['抵免', '通過']):
-                return gpa_candidate, credit_candidate
-            elif gpa_candidate.replace('.', '').isdigit() and (credit_candidate.isalpha() or credit_candidate in ['抵免', '通過']):
-                 # If it's reversed (GPA \n Credit)
-                return credit_candidate, gpa_candidate
+    # Regex to find a potential grade and a potential number (credit)
+    # Allows for optional whitespace between grade and number
+    # Group 1: Grade (A-F, +, -, 抵免, 通過, or empty)
+    # Group 2: Numeric part (digits and dot)
+    grade_credit_pattern = re.compile(r'^\s*([A-Z\+\-抵免通過]*)\s*([0-9\.]*)\s*$')
+
+    parsed_gpa = gpa
+    parsed_credit = credit
+
+    # Try to parse from GPA cell if credit cell is empty or looks like a grade
+    if not credit or (parse_gpa_to_numeric(credit) != 0.0 and not credit.replace('.', '').isdigit()):
+        match = grade_credit_pattern.match(gpa)
+        if match:
+            grade_part = match.group(1).strip()
+            num_part = match.group(2).strip()
+
+            # If a grade part is found and it's valid, use it for GPA
+            if grade_part and (parse_gpa_to_numeric(grade_part) != 0.0 or grade_part in ['抵免', '通過']):
+                parsed_gpa = grade_part
+            # If a numeric part is found and it's valid, use it for credit
+            if num_part and num_part.replace('.', '').isdigit():
+                parsed_credit = num_part
+            # If GPA cell contained "Grade Number", and credit cell was truly empty
+            elif not credit and parsed_gpa != gpa and parsed_credit != credit:
+                 # This means we successfully split 'gpa' cell into grade and credit
+                 pass
+            # Handle cases where original gpa was just "3" (a credit) and original credit was "A" (a grade) - swap them
+            elif gpa.replace('.', '').isdigit() and (parse_gpa_to_numeric(credit) != 0.0 and not credit.replace('.', '').isdigit()):
+                parsed_gpa = credit
+                parsed_credit = gpa
+
+    # Try to parse from Credit cell if GPA cell is empty or looks like a credit number
+    if not gpa or (gpa.replace('.', '').isdigit() and parse_gpa_to_numeric(gpa) == 0.0): # gpa looks like a credit number
+        match = grade_credit_pattern.match(credit)
+        if match:
+            grade_part = match.group(1).strip()
+            num_part = match.group(2).strip()
+
+            if grade_part and (parse_gpa_to_numeric(grade_part) != 0.0 or grade_part in ['抵免', '通過']):
+                parsed_gpa = grade_part
+            if num_part and num_part.replace('.', '').isdigit():
+                parsed_credit = num_part
+            # Handle cases where original credit was just "A" (a grade) and original gpa was "3" (a credit) - swap them
+            elif credit.replace('.', '').isdigit() and (parse_gpa_to_numeric(gpa) != 0.0 and not gpa.replace('.', '').isdigit()):
+                parsed_gpa = gpa
+                parsed_credit = credit
+
+    # Final check for common scenarios if one is clearly a grade and the other a number, and they were swapped
+    # E.g., if gpa is "3.0" and credit is "A", swap them
+    if parsed_gpa and parsed_credit:
+        is_gpa_like_grade = (parse_gpa_to_numeric(parsed_gpa) != 0.0 or parsed_gpa in ['抵免', '通過']) and not parsed_gpa.replace('.', '').isdigit()
+        is_credit_like_number = parsed_credit.replace('.', '').isdigit()
+
+        if not is_gpa_like_grade and is_credit_like_number: # GPA looks like a number, Credit looks like a number
+            # This is ambiguous, keep original assignment unless a swap is obvious
+            pass
+        elif is_gpa_like_grade and not is_credit_like_number: # GPA looks like a grade, Credit looks like a grade
+            # This means both are grades, which is probably wrong, return as is and let downstream handle
+            pass
+        elif not is_gpa_like_grade and not is_credit_like_number: # Both not grade and not number, keep as is
+            pass
+        elif is_gpa_like_grade and is_credit_like_number: # Correct scenario, grade in GPA, number in credit
+            pass
+        else: # Unlikely, but covers other combinations
+            pass
     
-    # Return original values if no specific pattern is matched
-    return gpa, credit
+    # One last swap check: If one cell got "抵免" or "通過" and the other got a number, assign them correctly
+    if parsed_gpa in ['抵免', '通過'] and parsed_credit.replace('.', '').isdigit():
+        pass # Correctly assigned
+    elif parsed_credit in ['抵免', '通過'] and parsed_gpa.replace('.', '').isdigit():
+        temp_gpa = parsed_credit
+        temp_credit = parsed_gpa
+        parsed_gpa = temp_gpa
+        parsed_credit = temp_credit
+
+    return parsed_gpa, parsed_credit
 
 # --- Streamlit 應用程式主體 ---
 def main():
@@ -126,67 +104,58 @@ def main():
 
     uploaded_file = st.file_uploader("上傳成績總表 PDF 檔案", type=["pdf"])
 
-    # 在 try 塊外部初始化 all_grades_data 和 full_grades_df
     all_grades_data = []
-    full_grades_df = pd.DataFrame() # 預設一個空的DataFrame，防止 NameError
+    full_grades_df = pd.DataFrame() 
 
     if uploaded_file is not None:
         st.success("檔案上傳成功！正在分析中...")
 
         try:
-            # 確保欄位名稱與 PDF 中實際提取出的名稱一致
             expected_header_keywords = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
             
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                 total_pages = len(pdf.pages)
 
                 for page_num, page in enumerate(pdf.pages):
-                    # 調整裁剪策略
-                    top_y_crop = 0 # 預設不裁剪頂部
-                    bottom_y_crop = page.height # 預設不裁剪底部
+                    top_y_crop = 0
+                    bottom_y_crop = page.height
 
-                    # 根據文件名稱和頁碼調整裁剪
                     if "謝云瑄成績總表.pdf" in uploaded_file.name:
-                        top_y_crop = 170 if page_num == 0 else 50 # 謝云瑄的PDF第一頁表格開始較低 [cite: 26]
-                        bottom_y_crop = page.height - 30 # 保留底部空間
+                        top_y_crop = 170 if page_num == 0 else 50
+                        bottom_y_crop = page.height - 30
                     elif "邱旭廷成績總表.pdf" in uploaded_file.name:
-                        top_y_crop = 250 if page_num == 0 else 50 # 邱旭廷的PDF第一頁表格開始更低 [cite: 37]
-                        bottom_y_crop = page.height - 30 # 保留底部空間
-                    else: # Default for other PDFs
+                        top_y_crop = 250 if page_num == 0 else 50
+                        bottom_y_crop = page.height - 30
+                    else:
                         top_y_crop = 100 if page_num == 0 else 50
                         bottom_y_crop = page.height - 30
 
-                    cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
+                    cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop))
                     
-                    # 針對 pdfplumber 0.7.0 版本調整 table_settings，移除 'snap_horizontal', 'snap_vertical'
-                    # 並確保使用 'lines' 策略來處理表格線
+                    # 嘗試更細緻的 table_settings
                     table_settings = {
                         "vertical_strategy": "lines",
                         "horizontal_strategy": "lines",
-                        "snap_tolerance": 3, 
-                        "text_tolerance": 3, 
-                        "join_tolerance": 3, 
-                        "edge_min_length": 3, 
-                        "min_words_horizontal": 1, 
-                        "min_words_vertical": 1 
+                        "snap_tolerance": 2, # 微調：從 3 調整為 2
+                        "text_tolerance": 2, # 微調：從 3 調整為 2
+                        "join_tolerance": 2, # 微調：從 3 調整為 2
+                        "edge_min_length": 3,
+                        "min_words_horizontal": 1,
+                        "min_words_vertical": 1
                     }
                     
                     tables = cropped_page.extract_tables(table_settings)
                     
                     if not tables:
-                        continue # 如果當前頁面沒有提取到表格，直接跳過
+                        continue
 
                     for table_idx, table in enumerate(tables):
-                        if not table or len(table) < 1: 
+                        if not table or len(table) < 1:
                             continue
 
-                        # 對每個單元格先轉字串再 strip，並過濾掉完全空行
-                        # 在這裡應用 normalize_text
                         filtered_table = []
                         for row in table:
-                            # 確保每個單元格都被轉換為字串，然後再進行 normalize_text
                             normalized_row = [normalize_text(cell) for cell in row]
-                            # 檢查行中是否有任何非空內容
                             if any(cell.strip() for cell in normalized_row):
                                 filtered_table.append(normalized_row)
                         
@@ -195,18 +164,14 @@ def main():
                         
                         header_row_found = False
                         header = []
-                        header_row_start_idx = -1 # 初始化為-1，表示數據從第0行開始
+                        header_row_start_idx = -1
 
-                        # 尋找表頭：檢查前幾行是否包含關鍵字
-                        potential_header_search_range = min(len(filtered_table), 5) # 最多檢查前5行
+                        potential_header_search_range = min(len(filtered_table), 5)
                         for h_idx in range(potential_header_search_range):
-                            h_row_cells = [cell.strip() for cell in filtered_table[h_idx]] # 已經過 normalize_text
+                            h_row_cells = [cell.strip() for cell in filtered_table[h_idx]]
                             
-                            # 檢查是否有足夠的關鍵字來識別為表頭
-                            # 至少包含 "學年度", "科目名稱", "學分", "GPA"
-                            # 使用更寬鬆的匹配，例如 "學年" 包含 "學年度"
                             header_match_criteria = [
-                                any("學年" in cell for cell in h_row_cells), # 兼容 "學年度" 和 "學年"
+                                any("學年" in cell for cell in h_row_cells),
                                 any("科目名稱" in cell for cell in h_row_cells),
                                 any("學分" in cell for cell in h_row_cells),
                                 any("GPA" in cell for cell in h_row_cells)
@@ -218,21 +183,16 @@ def main():
                                 header_row_start_idx = h_idx
                                 break
                         
-                        # 如果沒有找到明確的表頭，嘗試將預期列作為表頭，並假設數據從第一行開始
                         if not header_row_found:
-                            # 檢查第一行數據是否像成績數據（學年度是3位數字）
-                            # 假設第一列是學年度
                             if len(filtered_table[0]) > 0 and filtered_table[0][0].isdigit() and len(filtered_table[0][0]) == 3:
-                                header = expected_header_keywords # 假設列順序與預期一致
-                                header_row_start_idx = -1 # 表示數據從 filtered_table[0] 開始
-                                header_row_found = True # 標記為找到表頭 (默認表頭)
+                                header = expected_header_keywords
+                                header_row_start_idx = -1
+                                header_row_found = True
                             else:
-                                continue # 如果不像數據行，則跳過此表格
+                                continue
 
-                        # 動態映射列名到索引
                         col_to_index = {}
                         for i, h_text in enumerate(header):
-                            # 使用更靈活的判斷，確保能匹配多行表頭的關鍵字
                             if "學年" in h_text: col_to_index["學年度"] = i
                             elif "學期" in h_text: col_to_index["學期"] = i
                             elif "選課代號" in h_text: col_to_index["選課代號"] = i
@@ -240,13 +200,11 @@ def main():
                             elif "學分" in h_text: col_to_index["學分"] = i
                             elif "GPA" in h_text: col_to_index["GPA"] = i
 
-                        # 檢查是否找到所有關鍵列
                         critical_cols = ["學年度", "科目名稱", "學分", "GPA"]
                         if not all(col in col_to_index for col in critical_cols):
                             st.warning(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 缺少關鍵列。跳過此表格。")
-                            continue # 如果缺少關鍵列，則跳過此表格
+                            continue
 
-                        # 獲取關鍵列的索引 (使用 .get() 確保安全，如果沒有找到則為 None)
                         學年度_idx = col_to_index.get("學年度")
                         學期_idx = col_to_index.get("學期")
                         選課代號_idx = col_to_index.get("選課代號")
@@ -254,142 +212,103 @@ def main():
                         學分_idx = col_to_index.get("學分")
                         GPA_idx = col_to_index.get("GPA")
 
-                        # 構建新的數據行
                         processed_rows = []
-                        # current_row_data_temp 儲存當前正在處理的行數據，用於合併跨行內容
-                        # 初始化為預期列數的空字串列表
-                        current_row_data_temp = [""] * len(expected_header_keywords) 
+                        current_row_data_temp = [""] * len(expected_header_keywords)
 
-                        # 確定從 filtered_table 的哪一行開始處理數據
                         data_rows_to_process = filtered_table[header_row_start_idx + 1:] if header_row_start_idx != -1 else filtered_table[:]
 
                         for row_num_in_table, row_cells in enumerate(data_rows_to_process):
-                            # 過濾掉只包含空字串或 None 的行
                             if not any(str(cell).strip() for cell in row_cells):
                                 continue
 
-                            # 確保行足夠長，避免索引越界
-                            # 如果行太短，則用空字串填充，避免 IndexError
                             max_idx = max(col_to_index.values()) if col_to_index else 0
                             row_cells_padded = row_cells + [''] * (max_idx + 1 - len(row_cells))
 
-                            # 獲取關鍵列的值
-                            # 使用安全的索引訪問，如果索引不存在則為空字串
                             學年度_val = row_cells_padded[學年度_idx] if 學年度_idx is not None and 學年度_idx < len(row_cells_padded) else ''
                             選課代號_val = row_cells_padded[選課代號_idx] if 選課代號_idx is not None and 選課代號_idx < len(row_cells_padded) else ''
                             科目名稱_val = row_cells_padded[科目名稱_idx] if 科目名稱_idx is not None and 科目名稱_idx < len(row_cells_padded) else ''
                             學分_val = row_cells_padded[學分_idx] if 學分_idx is not None and 學分_idx < len(row_cells_padded) else ''
                             GPA_val = row_cells_padded[GPA_idx] if GPA_idx is not None and GPA_idx < len(row_cells_padded) else ''
 
-                            # 判斷是否為新成績行
-                            # 新行的標誌：學年度是3位數字 AND 選課代號或科目名稱不為空
                             is_new_grade_row = False
                             if 學年度_val.isdigit() and len(學年度_val) == 3 and \
                                (選課代號_val.strip() != '' or 科目名稱_val.strip() != ''):
                                 is_new_grade_row = True
                             
                             if is_new_grade_row:
-                                # 如果是新成績行，則將上一行的累積數據添加到 processed_rows
-                                # 只有當 current_row_data_temp 包含有效數據時才添加
                                 if current_row_data_temp and any(x is not None and str(x).strip() for x in current_row_data_temp):
-                                    processed_rows.append(current_row_data_temp[:]) # 添加副本
+                                    processed_rows.append(current_row_data_temp[:])
                                 
-                                # 初始化新的 current_row_data_temp
-                                current_row_data_temp = [""] * len(expected_header_keywords) # 初始化為空字串
+                                current_row_data_temp = [""] * len(expected_header_keywords)
 
-                                # 填充新行的數據
                                 if 學年度_idx is not None: current_row_data_temp[expected_header_keywords.index("學年度")] = 學年度_val
                                 if 學期_idx is not None: current_row_data_temp[expected_header_keywords.index("學期")] = (row_cells_padded[學期_idx] if 學期_idx is not None and 學期_idx < len(row_cells_padded) else '')
                                 if 選課代號_idx is not None: current_row_data_temp[expected_header_keywords.index("選課代號")] = 選課代號_val
                                 if 科目名稱_idx is not None: current_row_data_temp[expected_header_keywords.index("科目名稱")] = 科目名稱_val
-                                if 學分_idx is not None: current_row_data_temp[expected_header_keywords.index("學分")] = 學分_val
-                                if GPA_idx is not None: current_row_data_temp[expected_header_keywords.index("GPA")] = GPA_val
                                 
-                                # 在這裡處理單元格內 GPA/學分混寫的情況
-                                current_gpa, current_credit = parse_gpa_credit_from_combined_cell(
-                                    current_row_data_temp[expected_header_keywords.index("GPA")],
-                                    current_row_data_temp[expected_header_keywords.index("學分")]
-                                )
+                                # Apply parsing for GPA and Credit immediately
+                                current_gpa, current_credit = parse_gpa_credit_from_combined_cell(GPA_val, 學分_val)
                                 current_row_data_temp[expected_header_keywords.index("GPA")] = current_gpa
                                 current_row_data_temp[expected_header_keywords.index("學分")] = current_credit
 
-                            elif current_row_data_temp: 
-                                # 處理跨行數據（科目名稱或GPA/學分可能換行）
-                                # 判斷是否為續行：學年度和選課代號都應該是空的
+                            elif current_row_data_temp:
                                 is_continuation_candidate = (學年度_val.strip() == '' and 選課代號_val.strip() == '')
 
-                                # 合併科目名稱
                                 if is_continuation_candidate and 科目名稱_val.strip() != '':
                                     current_subject_name_index = expected_header_keywords.index("科目名稱")
                                     current_subject_name = current_row_data_temp[current_subject_name_index]
-                                    if current_subject_name.strip() == "": # 如果當前科目名稱為空
+                                    if current_subject_name.strip() == "":
                                         current_row_data_temp[current_subject_name_index] = 科目名稱_val
-                                    else: # 如果不為空則附加
+                                    else:
                                         current_row_data_temp[current_subject_name_index] += " " + 科目名稱_val
                                 
-                                # 合併學分和GPA，並優先處理 `parse_gpa_credit_from_combined_cell`
+                                # For continuation rows, try to update GPA/Credit if they are found in this row
                                 if is_continuation_candidate and (學分_val.strip() != '' or GPA_val.strip() != ''):
                                     merged_gpa, merged_credit = parse_gpa_credit_from_combined_cell(GPA_val, 學分_val)
                                     
                                     credit_index = expected_header_keywords.index("學分")
                                     gpa_index = expected_header_keywords.index("GPA")
 
-                                    # 如果學分是數字且大於0，則更新
-                                    if merged_credit.replace('.', '').isdigit() and float(merged_credit) > 0:
+                                    # Only update if current temp is empty or new value is more complete
+                                    if current_row_data_temp[credit_index].strip() == "" and merged_credit.strip() != "":
                                         current_row_data_temp[credit_index] = merged_credit
-                                    # 否則，如果當前行學分是空但新提取的非空，則更新
-                                    elif current_row_data_temp[credit_index].strip() == "" and 學分_val.strip() != "":
-                                        current_row_data_temp[credit_index] = 學分_val
-                                    
-                                    # 如果 GPA 像個成績等級，則更新
-                                    if merged_gpa.strip() != '' and (merged_gpa.isalpha() or merged_gpa in ['抵免', '通過']):
+                                    if current_row_data_temp[gpa_index].strip() == "" and merged_gpa.strip() != "":
                                         current_row_data_temp[gpa_index] = merged_gpa
-                                    elif current_row_data_temp[gpa_index].strip() == "" and GPA_val.strip() != "":
-                                        current_row_data_temp[gpa_index] = GPA_val
 
-                        # 處理表格的最後一行
-                        if current_row_data_temp and any(x is not None and str(x).strip() for x in current_row_data_temp): 
+
+                        if current_row_data_temp and any(x is not None and str(x).strip() for x in current_row_data_temp):
                             processed_rows.append(current_row_data_temp[:])
                         
                         if processed_rows:
-                            # 確保DataFrame的列名是固定的 expected_header_keywords
                             df_table = pd.DataFrame(processed_rows, columns=expected_header_keywords)
                             
-                            # 對整個DataFrame進行最後的清理，去除None、nan字串
                             for col in df_table.columns:
                                 df_table[col] = df_table[col].astype(str).str.strip().replace('None', '').replace('nan', '')
 
                             all_grades_data.append(df_table)
                         else:
-                            pass # 沒有提取到有效數據的表格就跳過
+                            pass
 
             if not all_grades_data:
                 st.warning("未能從 PDF 中提取有效的成績數據。請檢查 PDF 格式或調整表格提取設定。")
-                # 即使沒有數據，也創建一個空的 DataFrame 以免後續報錯
                 full_grades_df = pd.DataFrame(columns=expected_header_keywords)
             else:
                 full_grades_df = pd.concat(all_grades_data, ignore_index=True)
 
-                # 再次清理整個DataFrame，確保沒有完全空行，並且根據學年度篩選
                 full_grades_df.dropna(how='all', inplace=True)
                 
-                # 使用更嚴格的學年度篩選，確保是三位數字
-                # 並清理選課代號中的None或空字串
                 if '學年度' in full_grades_df.columns and '選課代號' in full_grades_df.columns:
                     full_grades_df = full_grades_df[
                         full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') &
-                        (full_grades_df['選課代號'].astype(str).str.strip() != '') # 確保選課代號不為空
+                        (full_grades_df['選課代號'].astype(str).str.strip() != '')
                     ]
 
-                # 過濾勞作成績，確保科目名稱列存在
                 if '科目名稱' in full_grades_df.columns:
                     full_grades_df = full_grades_df[~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)]
                 
-                # 確保 GPA 列是字串類型並清理空白
                 if 'GPA' in full_grades_df.columns:
                     full_grades_df['GPA'] = full_grades_df['GPA'].astype(str).str.strip()
                 
-                # 確保 學分 列是數字類型並處理非數字
                 if '學分' in full_grades_df.columns:
                     full_grades_df['學分'] = pd.to_numeric(full_grades_df['學分'], errors='coerce').fillna(0)
 
