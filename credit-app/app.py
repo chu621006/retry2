@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
-import pdfplumber # 改用 pdfplumber，它不需要 Java
+import pdfplumber
 
 # --- 1. GPA 轉換函數 ---
 def parse_gpa_to_numeric(gpa_str):
@@ -16,10 +16,9 @@ def parse_gpa_to_numeric(gpa_str):
         'C+': 2.3, 'C': 2.0, 'C-': 1.7,
         'D+': 1.3, 'D': 1.0, 'D-': 0.7,
         'E': 0.0, 'F': 0.0,
-        '抵免': 999.0, # Assign a very high value for '抵免' to ensure it passes
-        '通過': 999.0  # Assign a very high value for '通過' to ensure it passes
+        '抵免': 999.0,
+        '通過': 999.0
     }
-    # 處理可能存在的空白字元
     return gpa_map.get(gpa_str.strip(), 0.0)
 
 # --- 2. 成績分析函數 ---
@@ -27,33 +26,15 @@ def analyze_student_grades(df):
     """
     Analyzes a DataFrame of student grades to calculate total earned credits
     and remaining credits for graduation.
-
-    Args:
-        df (pd.DataFrame): DataFrame containing '學分' (credits) and 'GPA' columns.
-
-    Returns:
-        tuple: (total_earned_credits, remaining_credits_to_graduate, passed_courses_df)
     """
     GRADUATION_REQUIREMENT = 128
 
-    # 確保 '學分' 是數值，並將錯誤轉換為 NaN，然後填充為 0
     df['學分'] = pd.to_numeric(df['學分'], errors='coerce').fillna(0)
-
-    # 將 GPA 轉換為數值表示進行比較
     df['GPA_Numeric'] = df['GPA'].apply(parse_gpa_to_numeric)
-
-    # 判斷課程是否通過 (C- 等價或更高，或 '抵免'，或 '通過')
-    # C- 對應到我們的映射中的數值 1.7
     df['是否通過'] = df['GPA_Numeric'].apply(lambda x: x >= 1.7)
-
-    # 過濾出通過的課程，並且學分大於 0 (排除體育、軍訓等 0 學分的課程，除非它們明確算入畢業學分)
-    # 也排除可能存在的總結行，如「勞作成績為:未通過」
     passed_courses_df = df[df['是否通過'] & (df['學分'] > 0)].copy()
 
-    # 計算總獲得學分
     total_earned_credits = passed_courses_df['學分'].sum()
-
-    # 計算距離畢業還差的學分
     remaining_credits_to_graduate = max(0, GRADUATION_REQUIREMENT - total_earned_credits)
 
     return total_earned_credits, remaining_credits_to_graduate, passed_courses_df
@@ -70,50 +51,71 @@ def main():
         st.success("檔案上傳成功！正在分析中...")
 
         try:
-            # 使用 pdfplumber 讀取 PDF
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                 all_grades_data = []
+                # 定義預期的列名順序，以在合併前進行檢查和重命名
+                expected_columns_order = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
+
                 for page in pdf.pages:
-                    # 嘗試從每個頁面提取表格
-                    # settings 可以根據您的 PDF 調整，例如 vertical_strategy, horizontal_strategy
-                    # 這裡使用預設的 setting
                     tables = page.extract_tables()
 
                     for table in tables:
-                        # 每個 table 是一個列表的列表 (list of lists)，代表表格的行和列
-                        # 我們需要找到包含成績數據的表格
-                        # 根據您的 PDF 範例，表格的第一行通常是標題，例如「學年度」
-                        if table and len(table[0]) >= 6 and '學年度' in table[0][0]:
-                            # 將表格轉換為 Pandas DataFrame
-                            df_table = pd.DataFrame(table[1:], columns=table[0]) # 跳過標題行
-                            all_grades_data.append(df_table)
+                        # 確保表格不為空，並且包含足夠的列
+                        if table and len(table[0]) >= len(expected_columns_order):
+                            header = [col.replace('\n', ' ').strip() for col in table[0]] # 清理頭部列名
+                            
+                            # 檢查清理後的列名是否包含所有預期列，並且順序大致匹配
+                            # 或者至少 '學年度' 存在於第一個位置，表示這是一個成績表格
+                            if header[0] == "學年度":
+                                df_table = pd.DataFrame(table[1:], columns=header)
+                                
+                                # 再次清理 DataFrame 的列名，確保它們是我們想要的標準名稱
+                                # 這一步很關鍵，用於處理 pdfplumber 可能返回的非標準列名
+                                cleaned_cols = {}
+                                for col in df_table.columns:
+                                    cleaned_col_name = col.replace('\n', ' ').strip()
+                                    if cleaned_col_name in expected_columns_order:
+                                        cleaned_cols[col] = cleaned_col_name
+                                df_table.rename(columns=cleaned_cols, inplace=True)
+
+                                # 確保 DataFrame 有所有預期的列，如果缺失則添加並填充 NaN
+                                for col_name in expected_columns_order:
+                                    if col_name not in df_table.columns:
+                                        df_table[col_name] = pd.NA # 或者 ''
+                                        
+                                # 只保留我們關心的列，並按預期順序排列
+                                df_table = df_table[expected_columns_order]
+                                
+                                all_grades_data.append(df_table)
 
             if not all_grades_data:
                 st.warning("未能從 PDF 中提取任何表格。請檢查 PDF 格式或嘗試調整解析參數。")
                 return
 
-            # 合併所有提取到的 DataFrame
             full_grades_df = pd.concat(all_grades_data, ignore_index=True)
 
-            # 數據清洗
-            # 移除所有列都是 NaN 的行 (可能來自解析錯誤)
-            full_grades_df.dropna(how='all', inplace=True)
-            # 移除可能由於 PDF 解析造成的空白字元和換行符
+            # 數據清洗 (針對內容數據)
+            full_grades_df.dropna(how='all', inplace=True) # 移除所有列都是 NaN 的行
             for col in full_grades_df.columns:
-                if col in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]: # 僅清理相關列
+                if col in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]:
                     full_grades_df[col] = full_grades_df[col].astype(str).str.strip().str.replace('\n', ' ', regex=False)
             
-            # 過濾掉那些明顯不是成績行的資料，例如開頭不是數字的學年度，或者勞作成績那一行
-            full_grades_df = full_grades_df[
-                full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') &
-                ~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)
-            ]
-            
-            # 確保 GPA 列是字串類型以進行 .strip() 操作
+            # 過濾掉那些明顯不是成績行的資料
+            # 這裡的錯誤就是因為 '科目名稱' 列不存在
+            # 確保 '科目名稱' 存在於 DataFrame 且值不為 NaN 或 None
+            if '科目名稱' in full_grades_df.columns:
+                full_grades_df = full_grades_df[
+                    full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') &
+                    ~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)
+                ]
+            else:
+                st.warning("提取的數據中未找到 '科目名稱' 列，可能導致分析不準確。")
+                # 如果沒有 '科目名稱' 列，則跳過此篩選，但可能會包含勞作成績行
+                full_grades_df = full_grades_df[full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$')]
+
             full_grades_df['GPA'] = full_grades_df['GPA'].astype(str).str.strip()
 
             if not full_grades_df.empty:
-                # 執行學分分析
                 total_credits, remaining_credits, passed_courses_df = analyze_student_grades(full_grades_df)
 
                 st.subheader("查詢結果 ✅")
@@ -131,7 +133,7 @@ def main():
         except Exception as e:
             st.error(f"處理 PDF 檔案時發生錯誤：{e}")
             st.info("請確認您的 PDF 格式是否為清晰的表格。若問題持續，可能是 PDF 結構較為複雜，需要調整 `pdfplumber` 的表格提取設定。")
-            st.exception(e) # 顯示更詳細的錯誤信息
+            st.exception(e)
 
 if __name__ == "__main__":
     main()
