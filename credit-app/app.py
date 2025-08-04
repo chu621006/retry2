@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import collections
-import re
+import re # 引入正則表達式模組
 
 # --- 輔助函數 ---
 def normalize_text(cell_content):
@@ -33,42 +33,29 @@ def make_unique_columns(columns_list):
     seen = collections.defaultdict(int)
     unique_columns = []
     for col in columns_list:
-        # 清理欄位名稱，移除多餘空格和特殊符號
         original_col_cleaned = normalize_text(col)
         
-        # 如果清理後還是空的，給個通用名稱
-        if not original_col_cleaned:
-            # 優先使用偵測到的Column_X，然後再遞增
-            column_name_base = "Column_"
+        # 如果清理後還是空的，或者太短無法識別為有意義的標題，則給予通用名稱
+        if not original_col_cleaned or len(original_col_cleaned) < 2: 
+            name_base = "Column"
             current_idx = 1
-            while f"{column_name_base}{current_idx}" in unique_columns:
+            while f"{name_base}_{current_idx}" in unique_columns:
                 current_idx += 1
-            name = f"{column_name_base}{current_idx}"
+            name = f"{name_base}_{current_idx}"
         else:
             name = original_col_cleaned
         
-        # 檢查是否已存在，並生成唯一名稱
-        counter = seen[name]
+        # 處理重複名稱，避免 Column_1, Column_1_1 這種情況
         final_name = name
-        while final_name in unique_columns: # 避免生成 Column_1_1, 而直接 Column_2
+        counter = seen[name]
+        while final_name in unique_columns:
             counter += 1
-            final_name = f"{name}_{counter}" if counter > 1 else name
-        
-        # 確保最終名稱真的是唯一的，因為存在 Column_1, Column_1_1, Column_1_2 的情況
-        # 如果 name 本身是 Column_X 形式，則直接使用新的唯一數字
-        if re.match(r"Column_\d+", name) and counter > 0:
-            current_col_num = int(name.split('_')[-1]) if name.split('_')[-1].isdigit() else 0
-            final_name = f"Column_{max(current_col_num, len(unique_columns)) + 1}"
-            while final_name in unique_columns:
-                final_name = f"Column_{int(final_name.split('_')[-1]) + 1}"
-        elif counter > 0:
-            final_name = f"{name}_{counter}"
+            final_name = f"{name}_{counter}" if counter > 0 else name
         
         unique_columns.append(final_name)
-        seen[name] = counter 
+        seen[name] = counter
 
     return unique_columns
-
 
 def calculate_total_credits(df_list):
     """
@@ -79,8 +66,8 @@ def calculate_total_credits(df_list):
     
     st.subheader("學分計算分析")
 
-    # 定義可能的學分欄位名稱關鍵字
-    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits"] 
+    # 定義可能的學分欄位名稱關鍵字 (中文和英文)
+    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits", "Credit"] 
     
     # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2, "3" -> 3
     # 尋找字串中所有可能的數字 (整數或浮點數)，並取最後一個（通常是學分）
@@ -92,60 +79,70 @@ def calculate_total_credits(df_list):
         
         found_credit_column = None
         
-        # 優先匹配明確的學分關鍵字
+        # 步驟 1: 優先匹配明確的學分關鍵字
         for col in df.columns:
-            cleaned_col_for_match = "".join(char for char in col if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
+            cleaned_col_for_match = "".join(char for char in normalize_text(col) if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
             if any(keyword in cleaned_col_for_match for keyword in credit_column_keywords):
                 found_credit_column = col 
                 break
         
-        # 如果沒有明確匹配，嘗試從通用名稱 (Column_X) 中猜測學分欄位
+        # 步驟 2: 如果沒有明確匹配，嘗試從通用名稱 (Column_X) 中猜測學分欄位
         if not found_credit_column:
-            # 尋找可能包含數字的 Column_X 欄位
             potential_credit_columns = []
             for col in df.columns:
-                if re.match(r"Column_\d+", col):
+                # 檢查 Column_X 這種通用名稱
+                if re.match(r"Column_\d+", col) or len(col.strip()) < 3 : # 如果是 Column_X 或者欄位名稱很短，考慮為潛在目標
                     # 檢查該欄位的前幾行數據是否大部分是數字或可轉換為數字
-                    # 取前5行數據進行判斷，避免空行或表尾總計的干擾
-                    sample_data = df[col].head(5).apply(normalize_text).tolist()
-                    numeric_count = 0
+                    # 取前 N 行數據進行判斷，避免空行或表尾總計的干擾 (N=10 比較通用)
+                    sample_data = df[col].head(10).apply(normalize_text).tolist()
+                    
+                    numeric_like_count = 0
+                    total_sample_count = len(sample_data)
+                    
                     for item_str in sample_data:
-                        if item_str == "通過" or item_str == "抵免":
-                            numeric_count += 1
+                        if item_str == "通過" or item_str == "抵免" or item_str.lower() in ["pass", "exempt"]: # 兼容英文
+                            numeric_like_count += 1
                         else:
                             matches = credit_pattern.findall(item_str)
                             if matches:
                                 try:
-                                    float(matches[-1][0])
-                                    numeric_count += 1
+                                    # 嘗試轉換為浮點數，並檢查學分範圍 (例如 0.0 到 10.0)
+                                    val = float(matches[-1][0])
+                                    if 0.0 <= val <= 10.0: # 學分通常不會超過 10
+                                        numeric_like_count += 1
                                 except ValueError:
                                     pass
                     
-                    # 如果超過一半的樣本數據是數字，則認為可能是學分欄位
-                    if len(sample_data) > 0 and numeric_count / len(sample_data) > 0.5:
+                    # 如果超過一半 (或更高比例) 的樣本數據看起來像學分，則認為可能是學分欄位
+                    if total_sample_count > 0 and numeric_like_count / total_sample_count >= 0.6: # 提高識別門檻到 60%
                         potential_credit_columns.append(col)
             
-            # 如果找到多個潛在學分欄位，嘗試找出最像學分的
-            # 通常學分會在科目名稱後面幾欄
+            # 步驟 3: 如果找到多個潛在學分欄位，嘗試找出最像學分的
             if potential_credit_columns:
-                # 找到科目名稱欄位，學分欄位應該在其右側
+                # 找到科目名稱欄位，學分欄位通常在其右側
                 subject_name_col_idx = -1
                 for i, col in enumerate(df.columns):
-                    if "科目名稱" in normalize_text(col):
+                    if "科目名稱" in normalize_text(col) or "Subject Name" in normalize_text(col):
                         subject_name_col_idx = i
                         break
                 
+                best_candidate_col = None
                 if subject_name_col_idx != -1:
                     # 選取科目名稱右側且最接近的潛在學分欄位
+                    min_dist = float('inf')
                     for p_col in potential_credit_columns:
-                        if df.columns.get_loc(p_col) > subject_name_col_idx:
-                            found_credit_column = p_col
-                            break
+                        p_col_idx = df.columns.get_loc(p_col)
+                        if p_col_idx > subject_name_col_idx:
+                            dist = p_col_idx - subject_name_col_idx
+                            if dist < min_dist:
+                                min_dist = dist
+                                best_candidate_col = p_col
                 
-                # 如果沒有科目名稱欄位或右側沒有，就選第一個潛在學分欄位
-                if not found_credit_column and potential_credit_columns:
-                    found_credit_column = potential_credit_columns[0]
-
+                # 如果沒有找到基於科目名稱的最好候選，就選第一個潛在學分欄位
+                if not best_candidate_col and potential_credit_columns:
+                    best_candidate_col = potential_credit_columns[0]
+                
+                found_credit_column = best_candidate_col
 
         if found_credit_column:
             st.info(f"從表格 {df_idx + 1} (原始欄位: '{found_credit_column}') 偵測到學分數據。")
@@ -156,7 +153,7 @@ def calculate_total_credits(df_list):
                     
                     credit_val = 0.0
                     # 優先處理已知非數字的學分情況
-                    if item_str == "通過" or item_str == "抵免":
+                    if item_str == "通過" or item_str == "抵免" or item_str.lower() in ["pass", "exempt"]: # 兼容英文
                         credit_val = 0.0
                     else:
                         # 嘗試用正則表達式從字串中提取所有數字
@@ -164,7 +161,11 @@ def calculate_total_credits(df_list):
                         if matches:
                             # 假設最後一個數字通常是學分，例如 "A 2" 中的 "2"
                             try:
-                                credit_val = float(matches[-1][0]) 
+                                val = float(matches[-1][0])
+                                if 0.0 <= val <= 10.0: # 確保提取的數字在合理學分範圍內
+                                    credit_val = val
+                                else:
+                                    credit_val = 0.0 # 超出範圍的數字不計入學分
                             except ValueError:
                                 credit_val = 0.0
                         else:
@@ -204,36 +205,22 @@ def process_pdf_file(uploaded_file):
                 st.subheader(f"頁面 {page_num + 1}")
 
                 table_settings = {
-                    "vertical_strategy": "lines",
-                    "horizontal_strategy": "lines",
-                    "snap_tolerance": 3,
-                    "join_tolerance": 3,
-                    "edge_min_length": 3,
-                    "text_tolerance": 1,
-                    # 可以嘗試調整這些參數來優化表格偵測
-                    # "intersection_tolerance": 5, 
-                    # "min_words_vertical": 1, 
-                    # "min_words_horizontal": 1,
+                    "vertical_strategy": "lines", # 基於線條偵測垂直分隔
+                    "horizontal_strategy": "lines", # 基於線條偵測水平分隔
+                    "snap_tolerance": 3, # 垂直/水平線的捕捉容忍度
+                    "join_tolerance": 3, # 斷開線段的連接容忍度
+                    "edge_min_length": 3, # 偵測到的線條最小長度
+                    "text_tolerance": 1, # 文本與偵測線條的容忍度 (低於此值則認為文本在線上)
+                    # 這些參數可能需要根據不同PDF進行微調，尋找一個更通用的組合
+                    # "intersection_tolerance": 5, # 交叉點的容忍度
+                    # "min_words_vertical": 1, # 垂直分隔中最少文字數
+                    # "min_words_horizontal": 1, # 水平分隔中最少文字數
+                    # "explicit_vertical_lines": [], # 可以在此處手動指定垂直線的x坐標，但不適用通用解
+                    # "explicit_horizontal_lines": [], # 可以在此處手動指定水平線的y坐標，但不適用通用解
                 }
                 
-                current_page = page
-                
-                # --- 針對特定 PDF 和頁面進行 bbox 調整 ---
-                # **重要：您需要根據實際PDF內容，手動測量精確的bbox坐標**
-                # 坐標格式為 (x0, y0, x1, y1)
-                # x0, y0 是左上角坐標，x1, y1 是右下角坐標
-                # 您可以使用 PDF 閱讀器的「量測工具」或 pdfplumber 的 debug 模式來獲取這些坐標
-                if "謝云瑄成績總表.pdf" in uploaded_file.name:
-                    if page_num + 1 == 3: # 謝云瑄成績總表.pdf 的第 3 頁
-                        # 範例坐標，請替換為您測量到的精確值
-                        # 建議您嘗試較大的範圍，然後逐步縮小
-                        st.warning(f"請為謝云瑄成績總表.pdf 頁面 {page_num + 1} 提供精確的 bbox 坐標 (x0, y0, x1, y1)。")
-                        # current_page = page.crop((x0, y0, x1, y1)) 
-                    elif page_num + 1 == 4: # 謝云瑄成績總表.pdf 的第 4 頁
-                        # 範例坐標，請替換為您測量到的精確值
-                        st.warning(f"請為謝云瑄成績總表.pdf 頁面 {page_num + 1} 提供精確的 bbox 坐標 (x0, y0, x1, y1)。")
-                        # current_page = page.crop((x0, y0, x1, y1))
-                # --- 結束 bbox 調整 ---
+                # 移除所有 bbox 相關的硬編碼，以實現通用性
+                current_page = page 
 
                 try:
                     tables = current_page.extract_tables(table_settings)
@@ -268,6 +255,7 @@ def process_pdf_file(uploaded_file):
                             num_columns_header = len(unique_columns)
                             cleaned_data_rows = []
                             for row in data_rows:
+                                # 確保行數據與標題長度匹配
                                 if len(row) > num_columns_header:
                                     cleaned_data_rows.append(row[:num_columns_header])
                                 elif len(row) < num_columns_header:
@@ -288,7 +276,7 @@ def process_pdf_file(uploaded_file):
 
                 except Exception as e_table:
                     st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
-                    st.warning("這可能是由於 PDF 格式複雜或表格提取設定不適用。")
+                    st.warning("這可能是由於 PDF 格式複雜或表格提取設定不適用。請檢查 PDF 結構。")
 
     except pdfplumber.PDFSyntaxError as e_pdf_syntax:
         st.error(f"處理 PDF 語法時發生錯誤: `{e_pdf_syntax}`。檔案可能已損壞或格式不正確。")
