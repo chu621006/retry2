@@ -472,4 +472,219 @@ def calculate_total_credits(df_list):
                     # 如果學年和學期仍然是空的，嘗試從前兩列（如果存在）提取
                     if not acad_year and len(df.columns) > 0 and df.columns[0] in row and pd.notna(row[df.columns[0]]):
                         temp_first_col = normalize_text(row[df.columns[0]])
-                        year_match = re.search(r'(\d{3,4})', temp
+                        year_match = re.search(r'(\d{3,4})', temp_first_col)
+                        if year_match:
+                            acad_year = year_match.group(1)
+                        if not semester: # If semester still not found, try to extract from first column
+                             sem_match = re.search(r'(上|下|春|夏|秋|冬|1|2|3|春季|夏季|秋季|冬季|spring|summer|fall|winter)', temp_first_col, re.IGNORECASE)
+                             if sem_match:
+                                 semester = sem_match.group(1)
+
+                    if not semester and len(df.columns) > 1 and df.columns[1] in row and pd.notna(row[df.columns[1]]):
+                        temp_second_col = normalize_text(row[df.columns[1]])
+                        sem_match = re.search(r'(上|下|春|夏|秋|冬|1|2|3|春季|夏季|秋季|冬季|spring|summer|fall|winter)', temp_second_col, re.IGNORECASE)
+                        if sem_match:
+                            semester = sem_match.group(1)
+
+
+                    # 判斷是否計入總學分或不及格學分
+                    if is_failing_grade:
+                        failed_courses.append({
+                            "學年度": acad_year,
+                            "學期": semester,
+                            "科目名稱": course_name, 
+                            "學分": extracted_credit, 
+                            "GPA": extracted_gpa, 
+                            "來源表格": df_idx + 1
+                        })
+                    elif extracted_credit > 0 or is_passed_or_exempt_grade: 
+                        if extracted_credit > 0: 
+                            total_credits += extracted_credit
+                        calculated_courses.append({
+                            "學年度": acad_year,
+                            "學期": semester,
+                            "科目名稱": course_name, 
+                            "學分": extracted_credit, 
+                            "GPA": extracted_gpa, 
+                            "來源表格": df_idx + 1
+                        })
+                
+            except Exception as e:
+                st.warning(f"表格 {df_idx + 1} 的學分計算時發生錯誤: `{e}`。該表格的學分可能無法計入總數。請檢查學分和GPA欄位數據是否正確。")
+        else:
+            pass 
+            
+    return total_credits, calculated_courses, failed_courses
+
+def process_pdf_file(uploaded_file):
+    """
+    使用 pdfplumber 處理上傳的 PDF 檔案，提取表格。
+    此函數內部將減少 Streamlit 的直接輸出，只返回提取的數據。
+    """
+    all_grades_data = []
+
+    try:
+        with pdfplumber.open(uploaded_file) as pdf:
+            for page_num, page in enumerate(pdf.pages):
+                current_page = page 
+
+                table_settings = {
+                    "vertical_strategy": "lines", 
+                    "horizontal_strategy": "lines", 
+                    "snap_tolerance": 3,  
+                    "join_tolerance": 5,  
+                    "edge_min_length": 3, 
+                    "text_tolerance": 2,  
+                    "min_words_vertical": 1, 
+                    "min_words_horizontal": 1, 
+                }
+                
+                try:
+                    tables = current_page.extract_tables(table_settings)
+
+                    if not tables:
+                        st.info(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
+                        continue
+
+                    for table_idx, table in enumerate(tables):
+                        processed_table = []
+                        for row in table:
+                            normalized_row = [normalize_text(cell) for cell in row]
+                            if any(cell.strip() != "" for cell in normalized_row):
+                                processed_table.append(normalized_row)
+                        
+                        if not processed_table:
+                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
+                            continue
+
+                        # 確保表格至少有1行，並且列數合理
+                        # 這裡放寬了判斷，只要有數據就嘗試處理，讓 is_grades_table 去判斷是否為成績單
+                        if len(processed_table) > 0 and len(processed_table[0]) >= 3: 
+                            header_row = processed_table[0]
+                            data_rows = processed_table[1:]
+                        else:
+                            st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 結構不完整或行數不足，已跳過。")
+                            continue
+
+                        unique_columns = make_unique_columns(header_row)
+
+                        if data_rows:
+                            num_columns_header = len(unique_columns)
+                            cleaned_data_rows = []
+                            for row in data_rows:
+                                if len(row) > num_columns_header:
+                                    cleaned_data_rows.append(row[:num_columns_header])
+                                elif len(row) < num_columns_header: 
+                                    cleaned_data_rows.append(row + [''] * (num_columns_header - len(row)))
+                                else:
+                                    cleaned_data_rows.append(row)
+
+                            try:
+                                df_table = pd.DataFrame(cleaned_data_rows, columns=unique_columns)
+                                if is_grades_table(df_table):
+                                    all_grades_data.append(df_table)
+                                    st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格並已處理。")
+                                else:
+                                    st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} (表頭範例: {header_row}) 未識別為成績單表格，已跳過。")
+                            except Exception as e_df:
+                                st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 轉換為 DataFrame 時發生錯誤: `{e_df}`")
+                                st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
+                                st.error(f"生成的唯一欄位名稱: {unique_columns}")
+                        else:
+                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有數據行。")
+
+                except Exception as e_table:
+                    st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
+                    st.warning("這可能是由於 PDF 格式複雜或表格提取設定不適用。請檢查 PDF 結構。")
+
+    except pdfplumber.PDFSyntaxError as e_pdf_syntax:
+        st.error(f"處理 PDF 語法時發生錯誤: `{e_pdf_syntax}`。檔案可能已損壞或格式不正確。")
+    except Exception as e:
+        st.error(f"處理 PDF 檔案時發生一般錯誤: `{e}`")
+        st.error("請確認您的 PDF 格式是否為清晰的表格。若問題持續，可能是 PDF 結構較為複雜，需要調整 `pdfplumber` 的表格提取設定。")
+
+    return all_grades_data
+
+# --- Streamlit 應用主體 ---
+def main():
+    st.set_page_config(page_title="PDF 成績單學分計算工具", layout="wide")
+    st.title("📄 PDF 成績單學分計算工具")
+
+    st.write("請上傳您的 PDF 成績單檔案，工具將嘗試提取其中的表格數據並計算總學分。")
+    st.write("您也可以輸入目標學分，查看還差多少學分。")
+
+    uploaded_file = st.file_uploader("選擇一個 PDF 檔案", type="pdf")
+
+    if uploaded_file is not None:
+        st.success(f"已上傳檔案: **{uploaded_file.name}**")
+        with st.spinner("正在處理 PDF，請稍候..."):
+            extracted_dfs = process_pdf_file(uploaded_file)
+
+        if extracted_dfs:
+            total_credits, calculated_courses, failed_courses = calculate_total_credits(extracted_dfs)
+
+            st.markdown("---")
+            st.markdown("## ✅ 查詢結果") 
+            st.markdown(f"目前總學分: <span style='color:green; font-size: 24px;'>**{total_credits:.2f}**</span>", unsafe_allow_html=True)
+            
+            target_credits = st.number_input("輸入您的目標學分 (例如：128)", min_value=0.0, value=128.0, step=1.0, 
+                                            help="您可以設定一個畢業學分目標，工具會幫您計算還差多少學分。")
+            
+            credit_difference = target_credits - total_credits
+            if credit_difference > 0:
+                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) **{credit_difference:.2f}**")
+            elif credit_difference < 0:
+                st.write(f"已超越畢業學分 (共{target_credits:.0f}學分) **{abs(credit_difference):.2f}**")
+            else:
+                st.write(f"已達到畢業所需學分 (共{target_credits:.0f}學分) **0.00**")
+
+
+            st.markdown("---")
+            st.markdown("### 📚 通過的課程列表") 
+            if calculated_courses:
+                courses_df = pd.DataFrame(calculated_courses)
+                # 確保欄位順序與截圖一致，且只包含 GPA 和學分
+                display_cols = ['學年度', '學期', '科目名稱', '學分', 'GPA']
+                final_display_cols = [col for col in display_cols if col in courses_df.columns]
+                
+                st.dataframe(courses_df[final_display_cols], height=300, use_container_width=True) 
+            else:
+                st.info("沒有找到可以計算學分的科目。")
+
+            if failed_courses:
+                st.markdown("---")
+                st.markdown("### ⚠️ 不及格的課程列表")
+                failed_df = pd.DataFrame(failed_courses)
+                display_failed_cols = ['學年度', '學期', '科目名稱', '學分', 'GPA', '來源表格']
+                final_display_failed_cols = [col for col in display_failed_cols if col in failed_df.columns]
+                st.dataframe(failed_df[final_display_failed_cols], height=200, use_container_width=True)
+                st.info("這些科目因成績不及格 ('D', 'E', 'F' 等) 而未計入總學分。") # 更新訊息
+
+            # 提供下載選項 
+            if calculated_courses or failed_courses:
+                if calculated_courses:
+                    csv_data_passed = pd.DataFrame(calculated_courses).to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="下載通過的科目列表為 CSV",
+                        data=csv_data_passed,
+                        file_name=f"{uploaded_file.name.replace('.pdf', '')}_calculated_courses.csv",
+                        mime="text/csv",
+                        key="download_passed_btn"
+                    )
+                if failed_courses:
+                    csv_data_failed = pd.DataFrame(failed_courses).to_csv(index=False, encoding='utf-8-sig')
+                    st.download_button(
+                        label="下載不及格的科目列表為 CSV",
+                        data=csv_data_failed,
+                        file_name=f"{uploaded_file.name.replace('.pdf', '')}_failed_courses.csv",
+                        mime="text/csv",
+                        key="download_failed_btn"
+                    )
+            
+        else:
+            st.warning("未從 PDF 中提取到任何表格數據。請檢查 PDF 內容或嘗試調整 `pdfplumber` 的表格提取設定。")
+    else:
+        st.info("請上傳 PDF 檔案以開始處理。")
+
+if __name__ == "__main__":
+    main()
