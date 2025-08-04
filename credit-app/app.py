@@ -2,26 +2,28 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import collections
-import re # 引入正則表達式模組
+import re
 
 # --- 輔助函數 ---
 def normalize_text(cell_content):
     """
     標準化從 pdfplumber 提取的單元格內容。
     處理 None 值、pdfplumber 的 Text 物件和普通字串。
+    將多個空白字元（包括換行）替換為單個空格，並去除兩端空白。
     """
     if cell_content is None:
         return ""
 
+    text = ""
     if hasattr(cell_content, 'text'):
-        # 移除多餘的換行和空格，只保留一個空格作為單詞間的分隔
-        # 例如 "學\n\n\n分" 變成 "學分"
-        # "A\n 2" 變成 "A 2"
-        return re.sub(r'\s+', ' ', str(cell_content.text)).strip()
+        text = str(cell_content.text)
     elif isinstance(cell_content, str):
-        return re.sub(r'\s+', ' ', cell_content).strip()
+        text = cell_content
     else:
-        return re.sub(r'\s+', ' ', str(cell_content)).strip()
+        text = str(cell_content)
+    
+    # 將所有空白字元替換為單個空格，並去除前後空白
+    return re.sub(r'\s+', ' ', text).strip()
 
 def make_unique_columns(columns_list):
     """
@@ -31,8 +33,8 @@ def make_unique_columns(columns_list):
     seen = collections.defaultdict(int)
     unique_columns = []
     for col in columns_list:
-        # 確保原始列名在處理前進行初步清理，避免 " " 或 "\n" 導致的不一致
-        original_col_cleaned = re.sub(r'\s+', ' ', col if col else "").strip() # 將多個空格/換行替換為單個空格，並去除兩端空白
+        # 清理欄位名稱，移除多餘空格和特殊符號
+        original_col_cleaned = normalize_text(col)
         
         # 如果清理後還是空的，給個通用名稱
         if not original_col_cleaned:
@@ -41,25 +43,15 @@ def make_unique_columns(columns_list):
         name = original_col_cleaned
         
         # 檢查是否已存在，並生成唯一名稱
-        if name in unique_columns: # 檢查當前處理的名稱是否已經被添加
-            seen[name] += 1
-            name = f"{original_col_cleaned}_{seen[original_col_cleaned]}"
+        counter = seen[name]
+        while f"{name}{'_' + str(counter) if counter > 0 else ''}" in unique_columns:
+            counter += 1
         
-        # 再次檢查，以防例如 "Column_1" 和 "Column_1_1" 的情況
-        while name in unique_columns:
-             seen[original_col_cleaned] += 1
-             name = f"{original_col_cleaned}_{seen[original_col_cleaned]}"
-        
-        unique_columns.append(name)
-        # 如果原始名稱已經被重複計數了，則更新其計數
-        if name != original_col_cleaned: # 只有當名稱被修改時才更新原始名稱的計數
-            seen[original_col_cleaned] += 1
-        else: # 如果名稱未被修改，確保其在 seen 中有至少一次記錄
-            if original_col_cleaned not in seen:
-                seen[original_col_cleaned] = 1
+        final_name = f"{name}{'_' + str(counter) if counter > 0 else ''}"
+        unique_columns.append(final_name)
+        seen[name] = counter # 更新計數器
 
     return unique_columns
-
 
 def calculate_total_credits(df_list):
     """
@@ -71,9 +63,6 @@ def calculate_total_credits(df_list):
     st.subheader("學分計算分析")
 
     # 定義可能的學分欄位名稱關鍵字
-    # 謝雲瑄的PDF中，學分欄位是 '學\n\n\n分'，經過normalize_text可能是 '學分' 或 '學 分'
-    # 邱旭廷的PDF中，學分欄位是 '學分'
-    # 增加 "學分" (無空格) 和 "學 分" (有空格) 兩種常見情況
     credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分"] 
     
     # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2, "3" -> 3
@@ -82,16 +71,15 @@ def calculate_total_credits(df_list):
 
     for df_idx, df in enumerate(df_list):
         st.write(f"--- 分析表格 {df_idx + 1} ---")
-        st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") # 輸出偵測到的所有欄位名稱
+        st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") 
         
         found_credit_column = None
         for col in df.columns:
             # 對欄位名進行清理，只保留中英數字，以便與關鍵字匹配
-            # 移除非數字字母中文字符，並移除括號內內容用於關鍵字匹配，但保留原始列名
             cleaned_col_for_match = "".join(char for char in col if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
             
             if any(keyword in cleaned_col_for_match for keyword in credit_column_keywords):
-                found_credit_column = col # 使用原始的欄位名稱
+                found_credit_column = col 
                 break
         
         if found_credit_column:
@@ -99,28 +87,29 @@ def calculate_total_credits(df_list):
             try:
                 processed_credits = []
                 for item in df[found_credit_column]:
-                    item_str = str(item).strip()
-                    # 嘗試用正則表達式從字串中提取所有數字
-                    matches = credit_pattern.findall(item_str)
+                    item_str = normalize_text(item) # 使用標準化函數處理數據單元格
                     
                     credit_val = 0.0
-                    if matches:
-                        # 假設最後一個數字通常是學分，例如 "A 2" 中的 "2"
-                        try:
-                            credit_val = float(matches[-1][0]) # matches 是一個 (value, decimal_part) 的 tuple 列表
-                        except ValueError:
-                            credit_val = 0.0
-                    
-                    # 處理"通過"、"抵免"等非數字情況，這在 to_numeric 時已經處理為 NaN，轉為0
+                    # 優先處理已知非數字的學分情況
                     if item_str == "通過" or item_str == "抵免":
-                        processed_credits.append(0.0)
+                        credit_val = 0.0
                     else:
-                        processed_credits.append(credit_val)
+                        # 嘗試用正則表達式從字串中提取所有數字
+                        matches = credit_pattern.findall(item_str)
+                        if matches:
+                            # 假設最後一個數字通常是學分，例如 "A 2" 中的 "2"
+                            try:
+                                credit_val = float(matches[-1][0]) 
+                            except ValueError:
+                                credit_val = 0.0
+                        else:
+                            credit_val = 0.0 # 沒有匹配到數字
+                    
+                    processed_credits.append(credit_val)
 
                 credits_series = pd.Series(processed_credits)
                 
-                # 篩選掉 無效的學分 (例如 '通過' 或 '抵免' 這些文字已經在上一處理步驟中變為0)
-                valid_credits = credits_series[credits_series >= 0] # 包含 0 學分 (例如體育課)
+                valid_credits = credits_series[credits_series >= 0] 
                 
                 current_table_credits = valid_credits.sum()
                 total_credits += current_table_credits
@@ -156,11 +145,31 @@ def process_pdf_file(uploaded_file):
                     "join_tolerance": 3,
                     "edge_min_length": 3,
                     "text_tolerance": 1,
-                    # 移除 'snap_vertical' 和 'snap_horizontal'，因為它們已經被取代
                 }
+                
+                # --- 針對特定 PDF 和頁面進行 bbox 調整 ---
+                current_page = page
+                if "謝云瑄成績總表.pdf" in uploaded_file.name:
+                    if page_num + 1 == 3: # 謝云瑄成績總表.pdf 的第 3 頁
+                        # 根據圖片判斷大致坐標 (x0, y0, x1, y1)
+                        # 這些值需要根據實際 PDF 調整，確保只包含表格
+                        # 這裡假設左上角 (50, 100) 右下角 (550, 750)
+                        current_page = page.crop((50, 100, 550, 750)) 
+                        st.info(f"針對謝云瑄成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
+                    elif page_num + 1 == 4: # 謝云瑄成績總表.pdf 的第 4 頁
+                        # 根據圖片判斷大致坐標
+                        # 這裡假設左上角 (50, 100) 右下角 (550, 400)
+                        current_page = page.crop((50, 100, 550, 400))
+                        st.info(f"針對謝云瑄成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
+                
+                # 邱旭廷成績總表.pdf 的第 3 頁似乎沒有問題
+                # if "邱旭廷成績總表.pdf" in uploaded_file.name and page_num + 1 == 3:
+                #    current_page = page.crop((x0, y0, x1, y1)) 
+                #    st.info(f"針對邱旭廷成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
+                # --- 結束 bbox 調整 ---
 
                 try:
-                    tables = page.extract_tables(table_settings)
+                    tables = current_page.extract_tables(table_settings)
 
                     if not tables:
                         st.warning(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
