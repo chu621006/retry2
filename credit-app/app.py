@@ -38,20 +38,37 @@ def make_unique_columns(columns_list):
         
         # 如果清理後還是空的，給個通用名稱
         if not original_col_cleaned:
-            original_col_cleaned = f"Column_{len(unique_columns) + 1}"
-            
-        name = original_col_cleaned
+            # 優先使用偵測到的Column_X，然後再遞增
+            column_name_base = "Column_"
+            current_idx = 1
+            while f"{column_name_base}{current_idx}" in unique_columns:
+                current_idx += 1
+            name = f"{column_name_base}{current_idx}"
+        else:
+            name = original_col_cleaned
         
         # 檢查是否已存在，並生成唯一名稱
         counter = seen[name]
-        while f"{name}{'_' + str(counter) if counter > 0 else ''}" in unique_columns:
+        final_name = name
+        while final_name in unique_columns: # 避免生成 Column_1_1, 而直接 Column_2
             counter += 1
+            final_name = f"{name}_{counter}" if counter > 1 else name
         
-        final_name = f"{name}{'_' + str(counter) if counter > 0 else ''}"
+        # 確保最終名稱真的是唯一的，因為存在 Column_1, Column_1_1, Column_1_2 的情況
+        # 如果 name 本身是 Column_X 形式，則直接使用新的唯一數字
+        if re.match(r"Column_\d+", name) and counter > 0:
+            current_col_num = int(name.split('_')[-1]) if name.split('_')[-1].isdigit() else 0
+            final_name = f"Column_{max(current_col_num, len(unique_columns)) + 1}"
+            while final_name in unique_columns:
+                final_name = f"Column_{int(final_name.split('_')[-1]) + 1}"
+        elif counter > 0:
+            final_name = f"{name}_{counter}"
+        
         unique_columns.append(final_name)
-        seen[name] = counter # 更新計數器
+        seen[name] = counter 
 
     return unique_columns
+
 
 def calculate_total_credits(df_list):
     """
@@ -63,7 +80,7 @@ def calculate_total_credits(df_list):
     st.subheader("學分計算分析")
 
     # 定義可能的學分欄位名稱關鍵字
-    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分"] 
+    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits"] 
     
     # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2, "3" -> 3
     # 尋找字串中所有可能的數字 (整數或浮點數)，並取最後一個（通常是學分）
@@ -74,14 +91,62 @@ def calculate_total_credits(df_list):
         st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") 
         
         found_credit_column = None
+        
+        # 優先匹配明確的學分關鍵字
         for col in df.columns:
-            # 對欄位名進行清理，只保留中英數字，以便與關鍵字匹配
             cleaned_col_for_match = "".join(char for char in col if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
-            
             if any(keyword in cleaned_col_for_match for keyword in credit_column_keywords):
                 found_credit_column = col 
                 break
         
+        # 如果沒有明確匹配，嘗試從通用名稱 (Column_X) 中猜測學分欄位
+        if not found_credit_column:
+            # 尋找可能包含數字的 Column_X 欄位
+            potential_credit_columns = []
+            for col in df.columns:
+                if re.match(r"Column_\d+", col):
+                    # 檢查該欄位的前幾行數據是否大部分是數字或可轉換為數字
+                    # 取前5行數據進行判斷，避免空行或表尾總計的干擾
+                    sample_data = df[col].head(5).apply(normalize_text).tolist()
+                    numeric_count = 0
+                    for item_str in sample_data:
+                        if item_str == "通過" or item_str == "抵免":
+                            numeric_count += 1
+                        else:
+                            matches = credit_pattern.findall(item_str)
+                            if matches:
+                                try:
+                                    float(matches[-1][0])
+                                    numeric_count += 1
+                                except ValueError:
+                                    pass
+                    
+                    # 如果超過一半的樣本數據是數字，則認為可能是學分欄位
+                    if len(sample_data) > 0 and numeric_count / len(sample_data) > 0.5:
+                        potential_credit_columns.append(col)
+            
+            # 如果找到多個潛在學分欄位，嘗試找出最像學分的
+            # 通常學分會在科目名稱後面幾欄
+            if potential_credit_columns:
+                # 找到科目名稱欄位，學分欄位應該在其右側
+                subject_name_col_idx = -1
+                for i, col in enumerate(df.columns):
+                    if "科目名稱" in normalize_text(col):
+                        subject_name_col_idx = i
+                        break
+                
+                if subject_name_col_idx != -1:
+                    # 選取科目名稱右側且最接近的潛在學分欄位
+                    for p_col in potential_credit_columns:
+                        if df.columns.get_loc(p_col) > subject_name_col_idx:
+                            found_credit_column = p_col
+                            break
+                
+                # 如果沒有科目名稱欄位或右側沒有，就選第一個潛在學分欄位
+                if not found_credit_column and potential_credit_columns:
+                    found_credit_column = potential_credit_columns[0]
+
+
         if found_credit_column:
             st.info(f"從表格 {df_idx + 1} (原始欄位: '{found_credit_column}') 偵測到學分數據。")
             try:
@@ -145,27 +210,29 @@ def process_pdf_file(uploaded_file):
                     "join_tolerance": 3,
                     "edge_min_length": 3,
                     "text_tolerance": 1,
+                    # 可以嘗試調整這些參數來優化表格偵測
+                    # "intersection_tolerance": 5, 
+                    # "min_words_vertical": 1, 
+                    # "min_words_horizontal": 1,
                 }
                 
-                # --- 針對特定 PDF 和頁面進行 bbox 調整 ---
                 current_page = page
+                
+                # --- 針對特定 PDF 和頁面進行 bbox 調整 ---
+                # **重要：您需要根據實際PDF內容，手動測量精確的bbox坐標**
+                # 坐標格式為 (x0, y0, x1, y1)
+                # x0, y0 是左上角坐標，x1, y1 是右下角坐標
+                # 您可以使用 PDF 閱讀器的「量測工具」或 pdfplumber 的 debug 模式來獲取這些坐標
                 if "謝云瑄成績總表.pdf" in uploaded_file.name:
                     if page_num + 1 == 3: # 謝云瑄成績總表.pdf 的第 3 頁
-                        # 根據圖片判斷大致坐標 (x0, y0, x1, y1)
-                        # 這些值需要根據實際 PDF 調整，確保只包含表格
-                        # 這裡假設左上角 (50, 100) 右下角 (550, 750)
-                        current_page = page.crop((50, 100, 550, 750)) 
-                        st.info(f"針對謝云瑄成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
+                        # 範例坐標，請替換為您測量到的精確值
+                        # 建議您嘗試較大的範圍，然後逐步縮小
+                        st.warning(f"請為謝云瑄成績總表.pdf 頁面 {page_num + 1} 提供精確的 bbox 坐標 (x0, y0, x1, y1)。")
+                        # current_page = page.crop((x0, y0, x1, y1)) 
                     elif page_num + 1 == 4: # 謝云瑄成績總表.pdf 的第 4 頁
-                        # 根據圖片判斷大致坐標
-                        # 這裡假設左上角 (50, 100) 右下角 (550, 400)
-                        current_page = page.crop((50, 100, 550, 400))
-                        st.info(f"針對謝云瑄成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
-                
-                # 邱旭廷成績總表.pdf 的第 3 頁似乎沒有問題
-                # if "邱旭廷成績總表.pdf" in uploaded_file.name and page_num + 1 == 3:
-                #    current_page = page.crop((x0, y0, x1, y1)) 
-                #    st.info(f"針對邱旭廷成績總表.pdf 頁面 {page_num + 1} 使用裁剪區域進行表格偵測。")
+                        # 範例坐標，請替換為您測量到的精確值
+                        st.warning(f"請為謝云瑄成績總表.pdf 頁面 {page_num + 1} 提供精確的 bbox 坐標 (x0, y0, x1, y1)。")
+                        # current_page = page.crop((x0, y0, x1, y1))
                 # --- 結束 bbox 調整 ---
 
                 try:
@@ -180,7 +247,6 @@ def process_pdf_file(uploaded_file):
                         
                         processed_table = []
                         for row in table:
-                            # 確保每個單元格都經過 normalize_text 處理
                             normalized_row = [normalize_text(cell) for cell in row]
                             processed_table.append(normalized_row)
                         
