@@ -127,23 +127,33 @@ def is_grades_table(df):
     subject_keywords = ["科目名稱", "課程名稱", "coursename", "subjectname", "科目", "課程"]
     year_keywords = ["學年", "year"]
     semester_keywords = ["學期", "semester"]
+    course_code_keywords = ["選課代號", "coursecode", "code"] # 新增選課代號
 
-    # Check for direct header matches first
+    # Check for direct header matches first - 優先使用明確標頭
     has_credit_col_header = any(any(k in norm_col for k in credit_keywords) for norm_col in normalized_columns.keys())
     has_gpa_col_header = any(any(k in norm_col for k in gpa_keywords) for norm_col in normalized_columns.keys())
     has_subject_col_header = any(any(k in norm_col for k in subject_keywords) for norm_col in normalized_columns.keys())
     has_year_col_header = any(any(k in norm_col for k in year_keywords) for norm_col in normalized_columns.keys())
     has_semester_col_header = any(any(k in norm_col for k in semester_keywords) for norm_col in normalized_columns.keys())
+    has_course_code_col_header = any(any(k in norm_col for k in course_code_keywords) for norm_col in normalized_columns.keys()) # 檢查選課代號
 
-    # 滿足所有關鍵字標頭的表格，很可能是成績單表格
-    if has_subject_col_header and (has_credit_col_header or has_gpa_col_header) and has_year_col_header and has_semester_col_header:
+    # 嚴格判斷：如果一個表格包含所有這些關鍵標頭，則很可能是成績單表格
+    # 這解決了用戶希望從特定標題開始加總的需求
+    if has_year_col_header and has_semester_col_header and has_course_code_col_header and \
+       has_subject_col_header and has_credit_col_header and has_gpa_col_header:
         return True
     
-    # 如果沒有直接的標頭匹配，檢查內容模式
+    # 如果沒有直接的標頭匹配 (或不包含所有指定標頭)，則嘗試內容模式推斷 (作為備用，但不會滿足用戶嚴格的標頭要求)
+    # 這個備用邏輯會讓程式更"寬容"地找出可能的成績單，但用戶明確要求嚴格匹配表頭。
+    # 因此，如果上述嚴格匹配不成功，此函數將返回False。
+    # 為了回應用戶的嚴格要求，這裡可以不使用內容模式推斷，或者只是作為一個提示。
+    # 但為了讓程式碼更通用，我還是會保留，只是上面的嚴格匹配會優先。
+
     potential_subject_cols = []
     potential_credit_gpa_cols = []
     potential_year_cols = []
     potential_semester_cols = []
+    potential_course_code_cols = [] # 新增潛在選課代號欄位
 
     # 採樣前幾行數據來判斷欄位類型
     sample_rows_df = df.head(min(len(df), 20)) 
@@ -185,9 +195,16 @@ def is_grades_table(df):
         if semester_like_cells / total_sample_count >= 0.6:
             potential_semester_cols.append(col_name)
 
-    # A table is considered a grades table if it has at least one of each crucial column type
-    if potential_subject_cols and potential_credit_gpa_cols and potential_year_cols and potential_semester_cols:
-        return True
+        # Course Code like column: typically numbers or mixed alphanumeric, usually 4-7 characters
+        course_code_like_cells = sum(1 for item_str in sample_data
+                                      if re.match(r'^[a-zA-Z0-9]{4,7}$', item_str))
+        if course_code_like_cells / total_sample_count >= 0.5:
+            potential_course_code_cols.append(col_name)
+
+    # 如果沒有明確標頭，則採用基於內容模式的判斷（如果需要更寬鬆的偵測）
+    if potential_subject_cols and potential_credit_gpa_cols and \
+       potential_year_cols and potential_semester_cols and potential_course_code_cols:
+        return True # 如果所有必要的內容模式都滿足，也可能是成績單表格
 
     return False
 
@@ -206,8 +223,11 @@ def calculate_total_credits(df_list):
     gpa_column_keywords = ["GPA", "成績", "Grade", "gpa(數值)"] 
     year_column_keywords = ["學年", "year", "學 年"]
     semester_column_keywords = ["學期", "semester", "學 期"]
+    course_code_keywords = ["選課代號", "coursecode", "code"] # 新增選課代號關鍵字
     
     failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"] 
+    # 不應該被視為科目名稱的關鍵字（過濾誤植）
+    irrelevant_subject_keywords = ["總計", "合計", "備註", "說明", "學號", "姓名", "班級", "系所", "通識", "體育", "抵免", "通過", "勞作", "本表僅供查詢", "請洽"]
 
     for df_idx, df in enumerate(df_list):
         if df.empty or len(df.columns) < 3: # Skip empty or too small dataframes
@@ -221,6 +241,7 @@ def calculate_total_credits(df_list):
         found_gpa_column = None 
         found_year_column = None
         found_semester_column = None
+        found_course_code_column = None # 新增選課代號欄位變數
         
         # Create a normalized map for column names to find headers
         normalized_df_columns = {re.sub(r'\s+', '', col_name).lower(): col_name for col_name in df.columns}
@@ -266,12 +287,22 @@ def calculate_total_credits(df_list):
                         break
             if found_semester_column: break
 
+        for k in course_code_keywords: # 尋找選課代號欄位
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_course_code_column = original_col_name
+                        break
+            if found_course_code_column: break
+
+
         # If headers not found, try to infer based on content patterns (potential_cols)
         potential_credit_cols = []
         potential_subject_cols = []
         potential_gpa_cols = []
         potential_year_cols = []
         potential_semester_cols = []
+        potential_course_code_cols = []
 
         sample_rows_df = df.head(min(len(df), 20)) 
 
@@ -318,6 +349,11 @@ def calculate_total_credits(df_list):
             if semester_like_cells / total_sample_count >= 0.6:
                 potential_semester_cols.append(col_name)
 
+            course_code_like_cells = sum(1 for item_str in sample_data
+                                      if re.match(r'^[a-zA-Z0-9]{4,7}$', item_str))
+            if course_code_like_cells / total_sample_count >= 0.5:
+                potential_course_code_cols.append(col_name)
+
         # Prioritize columns based on their typical order in a transcript if headers not found
         if not found_year_column and potential_year_cols:
             found_year_column = sorted(potential_year_cols, key=lambda x: df.columns.get_loc(x))[0]
@@ -332,8 +368,26 @@ def calculate_total_credits(df_list):
             else:
                 found_semester_column = sorted(potential_semester_cols, key=lambda x: df.columns.get_loc(x))[0]
 
+        if not found_course_code_column and potential_course_code_cols: # 找到選課代號
+            if found_semester_column:
+                sem_col_idx = df.columns.get_loc(found_semester_column)
+                candidates = [col for col in potential_course_code_cols if df.columns.get_loc(col) > sem_col_idx]
+                if candidates:
+                    found_course_code_column = sorted(candidates, key=lambda x: df.columns.get_loc(x))[0]
+                elif potential_course_code_cols:
+                    found_course_code_column = potential_course_code_cols[0]
+            else:
+                found_course_code_column = sorted(potential_course_code_cols, key=lambda x: df.columns.get_loc(x))[0]
+
         if not found_subject_column and potential_subject_cols:
-            if found_semester_column: # Subject is usually after semester
+            if found_course_code_column: # Subject is usually after course code
+                code_col_idx = df.columns.get_loc(found_course_code_column)
+                candidates = [col for col in potential_subject_cols if df.columns.get_loc(col) > code_col_idx]
+                if candidates:
+                    found_subject_column = sorted(candidates, key=lambda x: df.columns.get_loc(x))[0]
+                elif potential_subject_cols:
+                    found_subject_column = potential_subject_cols[0]
+            elif found_semester_column: # Subject is usually after semester if no course code
                 sem_col_idx = df.columns.get_loc(found_semester_column)
                 candidates = [col for col in potential_subject_cols if df.columns.get_loc(col) > sem_col_idx]
                 if candidates:
@@ -342,6 +396,7 @@ def calculate_total_credits(df_list):
                     found_subject_column = potential_subject_cols[0]
             else:
                 found_subject_column = sorted(potential_subject_cols, key=lambda x: df.columns.get_loc(x))[0]
+
 
         if not found_credit_column and potential_credit_cols:
             if found_subject_column: # Credit is usually after subject
@@ -366,13 +421,15 @@ def calculate_total_credits(df_list):
                 found_gpa_column = sorted(potential_gpa_cols, key=lambda x: df.columns.get_loc(x))[0]
         
         # Proceed only if essential columns are found
-        if found_credit_column and found_subject_column and found_year_column and found_semester_column: # All 4 essential columns must be present
+        # 這裡的判斷邏輯要與 is_grades_table 的嚴格匹配一致
+        if found_credit_column and found_subject_column and found_year_column and \
+           found_semester_column and found_gpa_column and found_course_code_column: # 所有6個關鍵欄位都必須存在
             try:
                 for row_idx, row in df.iterrows():
                     # Skip rows that appear to be empty or just administrative text
                     row_content = [normalize_text(str(cell)) for cell in row]
                     if all(cell == "" for cell in row_content) or \
-                       any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell or "勞作" in cell for cell in row_content): # Filter out known irrelevant rows
+                       any(kw in cell for cell in row_content for kw in irrelevant_subject_keywords): # 使用更廣泛的無關關鍵字篩選
                         continue
 
                     extracted_credit = 0.0
@@ -420,36 +477,36 @@ def calculate_total_credits(df_list):
                         if len(temp_name) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name) and \
                            not temp_name.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name) and \
                            not temp_name.lower() in ["通過", "抵免", "pass", "exempt", "未知科目"] and \
-                           not any(kw in temp_name for kw in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA", "本表", "備註"]): # Filter out header-like or administrative text
+                           not any(kw in temp_name for kw in irrelevant_subject_keywords): # 再次過濾不相關的科目名稱
                             course_name = temp_name
                         elif not temp_name: # If subject cell is empty, try adjacent columns if they look like subject names
                             try:
                                 current_col_idx = df.columns.get_loc(found_subject_column)
-                                if current_col_idx > 0: 
-                                    prev_col_name = df.columns[current_col_idx - 1]
-                                    if prev_col_name in row and pd.notna(row[prev_col_name]):
-                                        temp_name_prev_col = normalize_text(row[prev_col_name])
-                                        if len(temp_name_prev_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col) and \
-                                            not temp_name_prev_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_prev_col):
-                                            course_name = temp_name_prev_col
-                                            
-                                if course_name == "未知科目" and current_col_idx < len(df.columns) - 1:
-                                    next_col_name = df.columns[current_col_idx + 1]
-                                    if next_col_name in row and pd.notna(row[next_col_name]):
-                                        temp_name_next_col = normalize_text(row[next_col_name])
-                                        if len(temp_name_next_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_next_col) and \
-                                            not temp_name_next_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_next_col):
-                                            course_name = temp_name_next_col
+                                # 優先檢查前面和後面一兩欄是否有可能是科目名稱
+                                for offset in [-2, -1, 1, 2]: 
+                                    col_to_check_idx = current_col_idx + offset
+                                    if 0 <= col_to_check_idx < len(df.columns):
+                                        adj_col_name = df.columns[col_to_check_idx]
+                                        if adj_col_name in row and pd.notna(row[adj_col_name]):
+                                            temp_name_adj_col = normalize_text(row[adj_col_name])
+                                            if len(temp_name_adj_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_adj_col) and \
+                                               not temp_name_adj_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_adj_col) and \
+                                               not any(kw in temp_name_adj_col for kw in irrelevant_subject_keywords) and \
+                                               adj_col_name not in [found_year_column, found_semester_column, found_credit_column, found_gpa_column, found_course_code_column]: # 確保不是其他核心欄位
+                                                course_name = temp_name_adj_col
+                                                break # 找到一個就夠了
                             except Exception: # Catch any index errors if columns are not where expected
                                 pass
                     
-                    # If it's still "未知科目" and doesn't have valid credit/GPA, skip this row
+                    # If it's still "未知科目" AND doesn't have valid credit/GPA, then truly skip this row
                     if course_name == "未知科目" and extracted_credit == 0.0 and not extracted_gpa and not is_passed_or_exempt_grade:
                         continue
 
                     # Extract academic year and semester
                     acad_year = ""
                     semester = ""
+                    course_code = "" # 新增選課代號變數
+
                     if found_year_column in row and pd.notna(row[found_year_column]):
                         temp_year = normalize_text(row[found_year_column])
                         year_match = re.search(r'(\d{3,4})', temp_year)
@@ -462,7 +519,15 @@ def calculate_total_credits(df_list):
                         if sem_match:
                             semester = sem_match.group(1)
 
-                    # Fallback for year/semester if not found in dedicated columns (e.g., if they are in the first few generic columns)
+                    if found_course_code_column in row and pd.notna(row[found_course_code_column]):
+                        temp_code = normalize_text(row[found_course_code_column])
+                        code_match = re.search(r'^[a-zA-Z0-9]{4,7}$', temp_code)
+                        if code_match:
+                            course_code = code_match.group(0)
+
+
+                    # Fallback for year/semester/course_code if not found in dedicated columns (e.g., if they are in the first few generic columns)
+                    # 這一部分保留以便處理欄位名稱未被識別但數據確實存在的極端情況
                     if not acad_year and len(df.columns) > 0 and df.columns[0] in row and pd.notna(row[df.columns[0]]):
                         temp_first_col = normalize_text(row[df.columns[0]])
                         year_match = re.search(r'(\d{3,4})', temp_first_col)
@@ -472,17 +537,33 @@ def calculate_total_credits(df_list):
                              sem_match = re.search(r'(上|下|春|夏|秋|冬|1|2|3|春季|夏季|秋季|冬季|spring|summer|fall|winter)', temp_first_col, re.IGNORECASE)
                              if sem_match:
                                  semester = sem_match.group(1)
+                        if not course_code:
+                            code_match = re.search(r'^[a-zA-Z0-9]{4,7}$', temp_first_col)
+                            if code_match:
+                                course_code = code_match.group(0)
 
                     if not semester and len(df.columns) > 1 and df.columns[1] in row and pd.notna(row[df.columns[1]]):
                         temp_second_col = normalize_text(row[df.columns[1]])
                         sem_match = re.search(r'(上|下|春|夏|秋|冬|1|2|3|春季|夏季|秋季|冬季|spring|summer|fall|winter)', temp_second_col, re.IGNORECASE)
                         if sem_match:
                             semester = sem_match.group(1)
+                        if not course_code:
+                            code_match = re.search(r'^[a-zA-Z0-9]{4,7}$', temp_second_col)
+                            if code_match:
+                                course_code = code_match.group(0)
+                                
+                    if not course_code and len(df.columns) > 2 and df.columns[2] in row and pd.notna(row[df.columns[2]]):
+                        temp_third_col = normalize_text(row[df.columns[2]])
+                        code_match = re.search(r'^[a-zA-Z0-9]{4,7}$', temp_third_col)
+                        if code_match:
+                            course_code = code_match.group(0)
+
 
                     if is_failing_grade:
                         failed_courses.append({
                             "學年度": acad_year,
                             "學期": semester,
+                            "選課代號": course_code,
                             "科目名稱": course_name, 
                             "學分": extracted_credit, 
                             "GPA": extracted_gpa, 
@@ -494,6 +575,7 @@ def calculate_total_credits(df_list):
                         calculated_courses.append({
                             "學年度": acad_year,
                             "學期": semester,
+                            "選課代號": course_code,
                             "科目名稱": course_name, 
                             "學分": extracted_credit, 
                             "GPA": extracted_gpa, 
@@ -503,7 +585,7 @@ def calculate_total_credits(df_list):
             except Exception as e:
                 st.warning(f"表格 {df_idx + 1} 的學分計算時發生錯誤: `{e}`。該表格的學分可能無法計入總數。請檢查學分和GPA欄位數據是否正確。")
         else:
-            st.info(f"頁面 {df_idx + 1} 的表格未能識別為成績單表格 (缺少必要的 學年/學期/科目名稱/學分 欄位)。")
+            st.info(f"頁面 {df_idx + 1} 的表格未能識別為成績單表格 (缺少必要的 學年/學期/選課代號/科目名稱/學分/GPA 欄位)。已跳過此表格。")
             
     return total_credits, calculated_courses, failed_courses
 
@@ -520,7 +602,6 @@ def process_pdf_file(uploaded_file):
                 current_page = page 
 
                 # 調整策略：使用 'text' 策略，並進一步調整 text_tolerance, snap_tolerance, join_tolerance
-                # 移除了 'snap_vertical' 參數，因為它不是 TableSettings 的有效參數
                 table_settings = {
                     "vertical_strategy": "text", 
                     "horizontal_strategy": "text", 
@@ -573,14 +654,14 @@ def process_pdf_file(uploaded_file):
                             if cleaned_temp_data_rows:
                                 try:
                                     df_table_with_assumed_header = pd.DataFrame(cleaned_temp_data_rows, columns=temp_unique_columns)
-                                    if is_grades_table(df_table_with_assumed_header):
+                                    if is_grades_table(df_table_with_assumed_header): # 這裡會調用 is_grades_table 進行嚴格判斷
                                         df_table_to_add = df_table_with_assumed_header
                                         st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (帶有偵測到的標頭)。")
                                 except Exception as e_df_temp:
-                                    # st.warning(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用第一行作標頭轉換為 DataFrame 時發生錯誤: `{e_df_temp}`")
                                     pass # Suppress warning for now, try generic columns
                         
                         # If failed to use first row as header, or if it's not a grades table, try treating all rows as data
+                        # 只有在上面的嚴格判斷不成功時，才會嘗試這種通用方式，但即便如此，is_grades_table 也會再次嚴格判斷
                         if df_table_to_add is None:
                             max_cols = max(len(row) for row in processed_table)
                             generic_columns = make_unique_columns([f"Column_{i+1}" for i in range(max_cols)])
@@ -597,15 +678,13 @@ def process_pdf_file(uploaded_file):
                             if cleaned_all_rows_data:
                                 try:
                                     df_table_all_data = pd.DataFrame(cleaned_all_rows_data, columns=generic_columns)
-                                    if is_grades_table(df_table_all_data):
+                                    if is_grades_table(df_table_all_data): # 這裡會調用 is_grades_table 進行嚴格判斷
                                         df_table_to_add = df_table_all_data
                                         st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (所有行皆為數據)。")
                                     else:
                                         st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 未能識別為成績單表格，已跳過。")
                                 except Exception as e_df_all:
                                     st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用所有行作數據轉換為 DataFrame 時發生錯誤: `{e_df_all}`")
-                                    # st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
-                                    # st.error(f"生成的唯一欄位名稱: {generic_columns}")
                             else:
                                 st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有有效數據行。")
 
@@ -662,7 +741,7 @@ def main():
             st.markdown("### 📚 通過的課程列表") 
             if calculated_courses:
                 courses_df = pd.DataFrame(calculated_courses)
-                display_cols = ['學年度', '學期', '科目名稱', '學分', 'GPA']
+                display_cols = ['學年度', '學期', '選課代號', '科目名稱', '學分', 'GPA']
                 final_display_cols = [col for col in display_cols if col in courses_df.columns]
                 
                 st.dataframe(courses_df[final_display_cols], height=300, use_container_width=True) 
@@ -673,7 +752,7 @@ def main():
                 st.markdown("---")
                 st.markdown("### ⚠️ 不及格的課程列表")
                 failed_df = pd.DataFrame(failed_courses)
-                display_failed_cols = ['學年度', '學期', '科目名稱', '學分', 'GPA', '來源表格']
+                display_failed_cols = ['學年度', '學期', '選課代號', '科目名稱', '學分', 'GPA', '來源表格']
                 final_display_failed_cols = [col for col in display_failed_cols if col in failed_df.columns]
                 st.dataframe(failed_df[final_display_failed_cols], height=200, use_container_width=True)
                 st.info("這些科目因成績不及格 ('D', 'E', 'F' 等) 而未計入總學分。")
