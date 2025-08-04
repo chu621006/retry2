@@ -121,7 +121,6 @@ def is_grades_table(df):
         return False
 
     # Normalize column names for keyword matching
-    # 使用 make_unique_columns 處理潛在的重複和空欄位名稱
     df.columns = make_unique_columns(df.columns.tolist())
     normalized_columns = {re.sub(r'\s+', '', col).lower(): col for col in df.columns.tolist()}
     
@@ -395,7 +394,8 @@ def calculate_total_credits(df_list):
                         if parsed_gpa_from_gpa_col: # Use GPA from dedicated GPA column if found
                             extracted_gpa = parsed_gpa_from_gpa_col.upper()
                         
-                        if parsed_credit_from_gpa_col > 0 and extracted_credit == 0.0: # If credit not found in credit col, but found in gpa col
+                        # Only update extracted_credit if it's currently 0 and a valid credit is found in GPA column
+                        if parsed_credit_from_gpa_col > 0 and extracted_credit == 0.0: 
                             extracted_credit = parsed_credit_from_gpa_col
                     
                     # Final check for credit value to ensure it adheres to the max 5 credit rule
@@ -417,39 +417,47 @@ def calculate_total_credits(df_list):
                        (found_credit_column in row and pd.notna(row[found_credit_column]) and normalize_text(row[found_credit_column]).lower() in ["通過", "抵免", "pass", "exempt"]):
                         is_passed_or_exempt_grade = True
                         
-                    course_name = "未知科目" 
+                    course_name = "" # Initialize as empty string
                     if found_subject_column in row and pd.notna(row[found_subject_column]): 
                         temp_name = normalize_text(row[found_subject_column])
                         # Only accept as subject name if it's reasonably long and contains Chinese characters, not just numbers or GPA
-                        if len(temp_name) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name) and \
+                        # Relaxed len(temp_name) >= 1 to allow for very short course names if necessary
+                        if len(temp_name) >= 1 and re.search(r'[\u4e00-\u9fa5]', temp_name) and \
                            not temp_name.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name) and \
                            not temp_name.lower() in ["通過", "抵免", "pass", "exempt", "未知科目"] and \
                            not any(kw in temp_name for kw in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA", "本表", "備註"]): # Filter out header-like or administrative text
                             course_name = temp_name
-                        elif not temp_name: # If subject cell is empty, try adjacent columns if they look like subject names
-                            try:
-                                current_col_idx = df.columns.get_loc(found_subject_column)
-                                if current_col_idx > 0: 
-                                    prev_col_name = df.columns[current_col_idx - 1]
-                                    if prev_col_name in row and pd.notna(row[prev_col_name]):
-                                        temp_name_prev_col = normalize_text(row[prev_col_name])
-                                        if len(temp_name_prev_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col) and \
-                                            not temp_name_prev_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_prev_col):
-                                            course_name = temp_name_prev_col
-                                            
-                                if course_name == "未知科目" and current_col_idx < len(df.columns) - 1:
-                                    next_col_name = df.columns[current_col_idx + 1]
-                                    if next_col_name in row and pd.notna(row[next_col_name]):
-                                        temp_name_next_col = normalize_text(row[next_col_name])
-                                        if len(temp_name_next_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_next_col) and \
-                                            not temp_name_next_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_next_col):
-                                            course_name = temp_name_next_col
-                            except Exception: # Catch any index errors if columns are not where expected
-                                pass
-                    
-                    # If it's still "未知科目" and doesn't have valid credit/GPA, skip this row
-                    if course_name == "未知科目" and extracted_credit == 0.0 and not extracted_gpa and not is_passed_or_exempt_grade:
+                        # If subject cell is empty or filtered out, try adjacent columns if they look like subject names
+                        else: 
+                            current_col_idx = df.columns.get_loc(found_subject_column)
+                            # Check column to the left
+                            if current_col_idx > 0: 
+                                prev_col_name = df.columns[current_col_idx - 1]
+                                if prev_col_name in row and pd.notna(row[prev_col_name]):
+                                    temp_name_prev_col = normalize_text(row[prev_col_name])
+                                    if len(temp_name_prev_col) >= 1 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col) and \
+                                        not temp_name_prev_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_prev_col) and \
+                                        not any(kw in temp_name_prev_col for kw in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]):
+                                        course_name = temp_name_prev_col
+                                        
+                            # If still empty, check column to the right
+                            if not course_name and current_col_idx < len(df.columns) - 1:
+                                next_col_name = df.columns[current_col_idx + 1]
+                                if next_col_name in row and pd.notna(row[next_col_name]):
+                                    temp_name_next_col = normalize_text(row[next_col_name])
+                                    if len(temp_name_next_col) >= 1 and re.search(r'[\u4e00-\u9fa5]', temp_name_next_col) and \
+                                        not temp_name_next_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_next_col) and \
+                                        not any(kw in temp_name_next_col for kw in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]):
+                                        course_name = temp_name_next_col
+
+                    # If it's still an empty course_name and doesn't have valid credit/GPA, skip this row
+                    if not course_name and extracted_credit == 0.0 and not extracted_gpa and not is_passed_or_exempt_grade:
                         continue
+                    
+                    # If course_name is still empty, label it as "未知科目"
+                    if not course_name:
+                        course_name = "未知科目"
+
 
                     # Extract academic year and semester
                     acad_year = ""
@@ -523,14 +531,14 @@ def process_pdf_file(uploaded_file):
             for page_num, page in enumerate(pdf.pages):
                 current_page = page 
 
-                # 調整策略：使用 'text' 策略，並進一步調整 text_tolerance, snap_tolerance, join_tolerance
+                # 將 table_settings 調整回更平衡的數值
                 table_settings = {
                     "vertical_strategy": "text", 
                     "horizontal_strategy": "text", 
-                    "snap_tolerance": 10,  # 增大
-                    "join_tolerance": 12,  # 增大
+                    "snap_tolerance": 3,  # 恢復到一個常用且平衡的值
+                    "join_tolerance": 3,  # 恢復到一個常用且平衡的值
                     "edge_min_length": 3, 
-                    "text_tolerance": 5,  # 增大
+                    "text_tolerance": 3,  # 恢復到一個常用且平衡的值
                     "min_words_vertical": 1, 
                     "min_words_horizontal": 1, 
                 }
@@ -580,7 +588,6 @@ def process_pdf_file(uploaded_file):
                                         df_table_to_add = df_table_with_assumed_header
                                         st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (帶有偵測到的標頭)。")
                                 except Exception as e_df_temp:
-                                    # st.warning(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用第一行作標頭轉換為 DataFrame 時發生錯誤: `{e_df_temp}`")
                                     pass # Suppress warning for now, try generic columns
                         
                         # If failed to use first row as header, or if it's not a grades table, try treating all rows as data
@@ -652,7 +659,7 @@ def main():
             
             credit_difference = target_credits - total_credits
             if credit_difference > 0:
-                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) **{credit_difference:.2f}**")
+                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) 還差 **{credit_difference:.2f}**")
             elif credit_difference < 0:
                 st.write(f"已超越畢業學分 (共{target_credits:.0f}學分) **{abs(credit_difference):.2f}**")
             else:
