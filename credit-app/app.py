@@ -15,10 +15,13 @@ def normalize_text(cell_content):
         return ""
 
     text = ""
+    # 檢查是否是 pdfplumber 的 Text 物件 (它會有 .text 屬性)
     if hasattr(cell_content, 'text'):
         text = str(cell_content.text)
+    # 如果不是 Text 物件，但本身是字串
     elif isinstance(cell_content, str):
         text = cell_content
+    # 其他情況，嘗試轉換為字串
     else:
         text = str(cell_content)
     
@@ -170,7 +173,7 @@ def calculate_total_credits(df_list):
             gpa_like_count = 0
             for item_str in sample_data:
                 # 檢查是否是標準的 GPA 字母等級 (A+, B-, C, D, E, F) 或數字分數
-                if re.match(r'^[A-Fa-f][+\-]?$', item_str) or (item_str.isdigit() and len(item_str) <=3): # 考慮分數
+                if re.match(r'^[A-Fa-f][+\-]?' , item_str) or (item_str.isdigit() and len(item_str) <=3): # 考慮分數
                     gpa_like_count += 1
             if total_sample_count > 0 and gpa_like_count / total_sample_count >= 0.6: 
                 potential_gpa_columns.append(col_name)
@@ -211,12 +214,6 @@ def calculate_total_credits(df_list):
 
 
         if found_credit_column:
-            # st.info(f"從表格 {df_idx + 1} 偵測到學分欄位: '{found_credit_column}'。")
-            # if found_subject_column:
-            #     st.info(f"從表格 {df_idx + 1} 偵測到科目名稱欄位: '{found_subject_column}'。")
-            # if found_gpa_column:
-            #     st.info(f"從表格 {df_idx + 1} 偵測到 GPA 欄位: '{found_gpa_column}'。")
-
             try:
                 for row_idx, row in df.iterrows():
                     # 嘗試從學分或 GPA 欄位獲取學分和 GPA
@@ -285,64 +282,4 @@ def calculate_total_credits(df_list):
                         if is_failing_grade:
                             failed_courses.append({
                                 "學年度": acad_year,
-                                "學期": semester,
-                                "科目名稱": course_name, 
-                                "學分": extracted_credit, 
-                                "GPA": extracted_gpa, 
-                                "來源表格": df_idx + 1
-                            })
-                        elif extracted_credit > 0: # 只有學分大於0且非不及格才計入總學分
-                            total_credits += extracted_credit
-                            calculated_courses.append({
-                                "學年度": acad_year,
-                                "學期": semester,
-                                "科目名稱": course_name, 
-                                "學分": extracted_credit, 
-                                "GPA": extracted_gpa, 
-                                "來源表格": df_idx + 1
-                            })
-                
-            except Exception as e:
-                st.warning(f"表格 {df_idx + 1} 的學分計算時發生錯誤: `{e}`")
-                st.warning("該表格的學分可能無法計入總數。請檢查學分和GPA欄位數據是否正確。")
-        else:
-            pass # 不顯示此類信息
-            
-    return total_credits, calculated_courses, failed_courses
-
-def process_pdf_file(uploaded_file):
-    """
-    使用 pdfplumber 處理上傳的 PDF 檔案，提取表格。
-    此函數內部將減少 Streamlit 的直接輸出，只返回提取的數據。
-    """
-    all_grades_data = []
-
-    try:
-        with pdfplumber.open(uploaded_file) as pdf:
-            for page_num, page in enumerate(pdf.pages):
-                # 針對謝云瑄的PDF進行切割，只保留主要表格區域
-                # 這裡需要根據具體PDF調整。對於謝云瑄的PDF，發現第一頁和最後一頁有額外資訊，
-                # 而主要成績在中間頁面且表格位置固定
-                
-                # 假設成績表格在每頁的特定區域，這可以提高準確性。
-                # 這些值需要通過手動檢查PDF來確定。
-                # 根據 '謝云瑄成績總表.pdf' 和 '邱旭廷成績總表.pdf' 的分析，
-                # 主要表格區域大概在 (x0, y0, x1, y1)
-                # 例如：左上角 (0, 150) 到右下角 (頁寬, 頁高)
-                
-                # 先獲取頁面尺寸
-                page_width = page.width
-                page_height = page.height
-
-                # 針對謝云瑄的 PDF 調整裁剪區域。
-                # 觀察謝云瑄的PDF，主要的成績表格通常從頁面頂部往下約 100-150 單位開始，
-                # 直到頁面底部。左右兩邊通常是完整的。
-                # 這是一個通用但可能需要微調的裁剪區域。
-                
-                # 移除裁剪，讓 pdfplumber 自動偵測。裁剪有時會導致表格切割不完整。
-                # cropped_page = page.crop((0, 100, page_width, page_height)) 
-                current_page = page # 使用完整頁面
-
-                table_settings = {
-                    "vertical_strategy": "lines", 
-                    "horizontal_strategy": "lines",
+                                "學
