@@ -5,6 +5,7 @@ import collections
 import re 
 
 # --- 輔助函數 ---
+# 確保這個函數在任何調用之前定義，處理 None 值、pdfplumber Text 物件和普通字串
 def normalize_text(cell_content):
     """
     標準化從 pdfplumber 提取的單元格內容。
@@ -67,7 +68,8 @@ def calculate_total_credits(df_list):
     total_credits = 0.0
     calculated_courses = [] # 用於存放計算了學分的科目名稱和學分
 
-    st.subheader("學分計算分析")
+    # 移除詳細的學分計算分析小標題，保持介面簡潔
+    # st.subheader("學分計算分析") 
 
     # 定義可能的學分欄位名稱關鍵字 (中文和英文)
     credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits", "Credit"] 
@@ -78,14 +80,16 @@ def calculate_total_credits(df_list):
     credit_pattern = re.compile(r'(\d+(\.\d+)?)') 
 
     for df_idx, df in enumerate(df_list):
-        st.write(f"--- 分析表格 {df_idx + 1} ---")
-        st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") 
+        # 移除每一頁的詳細分析輸出，保持簡潔
+        # st.write(f"--- 分析表格 {df_idx + 1} ---")
+        # st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") 
         
         found_credit_column = None
         found_subject_column = None # 偵測科目名稱欄位
         
         # 步驟 1: 優先匹配明確的學分和科目關鍵字
         for col in df.columns:
+            # 清理欄位名，只保留中英文數字，用於匹配關鍵字
             cleaned_col_for_match = "".join(char for char in normalize_text(col) if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
             
             if any(keyword in cleaned_col_for_match for keyword in credit_column_keywords):
@@ -103,7 +107,8 @@ def calculate_total_credits(df_list):
             potential_subject_columns = []
 
             for col in df.columns:
-                is_general_col = re.match(r"Column_\d+", col) or len(col.strip()) < 3
+                # 判斷是否為通用欄位名（例如 Column_1）或長度過短
+                is_general_col = re.match(r"Column_\d+", col) or len(normalize_text(col).strip()) < 3
                 
                 # 檢查是否為潛在學分欄位
                 # 取前 N 行數據進行判斷，避免空行或表尾總計的干擾 (N=10 比較通用)
@@ -124,6 +129,7 @@ def calculate_total_credits(df_list):
                                     numeric_like_count += 1
                             except ValueError:
                                 pass
+                        # 不匹配數字或特定關鍵字的，不計入 numeric_like_count
                 
                 # 如果超過一半 (或更高比例) 的樣本數據看起來像學分，則認為可能是學分欄位
                 if total_sample_count > 0 and numeric_like_count / total_sample_count >= 0.6: # 提高識別門檻到 60%
@@ -174,11 +180,12 @@ def calculate_total_credits(df_list):
                     found_subject_column = potential_subject_columns[0]
 
         if found_credit_column:
-            st.info(f"從表格 {df_idx + 1} 偵測到學分欄位: '{found_credit_column}'。")
-            if found_subject_column:
-                st.info(f"從表格 {df_idx + 1} 偵測到科目名稱欄位: '{found_subject_column}'。")
-            else:
-                st.warning(f"表格 {df_idx + 1} 未偵測到明確的科目名稱欄位。科目名稱可能無法準確記錄。")
+            # 移除詳細偵測訊息，只保留問題提示
+            # st.info(f"從表格 {df_idx + 1} 偵測到學分欄位: '{found_credit_column}'。")
+            # if found_subject_column:
+            # st.info(f"從表格 {df_idx + 1} 偵測到科目名稱欄位: '{found_subject_column}'。")
+            # else:
+            # st.warning(f"表格 {df_idx + 1} 未偵測到明確的科目名稱欄位。科目名稱可能無法準確記錄。")
 
             try:
                 current_table_credits = 0.0
@@ -215,30 +222,35 @@ def calculate_total_credits(df_list):
                         calculated_courses.append({"科目名稱": course_name, "學分": credit_val, "來源表格": df_idx + 1})
 
                 total_credits += current_table_credits
-                st.write(f"表格 {df_idx + 1} 的學分總計: **{current_table_credits:.2f}**")
+                # 移除每個表格的學分總計顯示
+                # st.write(f"表格 {df_idx + 1} 的學分總計: **{current_table_credits:.2f}**")
                 
             except Exception as e:
                 st.warning(f"表格 {df_idx + 1} 的學分欄位 '{found_credit_column}' 轉換為數值時發生錯誤: `{e}`")
                 st.warning("該表格的學分可能無法計入總數。請檢查學分欄位數據是否為純數字或可提取數字。")
         else:
-            st.info(f"表格 {df_idx + 1} 未偵測到明確的學分欄位。檢查欄位：`{list(df.columns)}`。不計入總學分。")
+            # 移除詳細的偵測不到學分欄位訊息
+            # st.info(f"表格 {df_idx + 1} 未偵測到明確的學分欄位。檢查欄位：`{list(df.columns)}`。不計入總學分。")
+            pass # 不顯示此類信息，保持介面簡潔
             
     return total_credits, calculated_courses
 
 def process_pdf_file(uploaded_file):
     """
     使用 pdfplumber 處理上傳的 PDF 檔案，提取表格。
+    此函數內部將減少 Streamlit 的直接輸出，只返回提取的數據。
     """
     all_grades_data = []
 
     try:
         with pdfplumber.open(uploaded_file) as pdf:
-            st.write(f"正在處理檔案: **{uploaded_file.name}**")
-            num_pages = len(pdf.pages)
-            st.info(f"PDF 總頁數: **{num_pages}**")
+            # 移除處理檔案和頁數信息，保持介面簡潔
+            # st.write(f"正在處理檔案: **{uploaded_file.name}**")
+            # num_pages = len(pdf.pages)
+            # st.info(f"PDF 總頁數: **{num_pages}**")
 
             for page_num, page in enumerate(pdf.pages):
-                # 為了簡潔輸出，移除了每頁的詳細標題，但保留頁面號碼用於分析追蹤
+                # 移除頁面標題
                 # st.subheader(f"頁面 {page_num + 1}") 
 
                 table_settings = {
@@ -256,11 +268,12 @@ def process_pdf_file(uploaded_file):
                     tables = current_page.extract_tables(table_settings)
 
                     if not tables:
+                        # 仍保留未偵測到表格的警告，因為這是關鍵信息
                         st.warning(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
                         continue
 
                     for table_idx, table in enumerate(tables):
-                        # 為了簡潔輸出，移除了每個表格的詳細標題
+                        # 移除每個表格的標題
                         # st.markdown(f"**頁面 {page_num + 1} 的表格 {table_idx + 1}**")
                         
                         processed_table = []
@@ -270,6 +283,7 @@ def process_pdf_file(uploaded_file):
                             processed_table.append(normalized_row)
                         
                         if not processed_table:
+                            # 仍保留空表格信息，幫助偵錯
                             st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
                             continue
 
@@ -298,15 +312,19 @@ def process_pdf_file(uploaded_file):
                             try:
                                 df_table = pd.DataFrame(cleaned_data_rows, columns=unique_columns)
                                 all_grades_data.append(df_table)
-                                # st.dataframe(df_table) # 移除詳細表格輸出
+                                # 這是您希望移除的詳細表格輸出
+                                # st.dataframe(df_table) 
                             except Exception as e_df:
+                                # 仍保留轉換 DataFrame 的錯誤信息，這很重要
                                 st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 轉換為 DataFrame 時發生錯誤: `{e_df}`")
                                 st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
                                 st.error(f"生成的唯一欄位名稱: {unique_columns}")
                         else:
+                            # 仍保留沒有數據行信息
                             st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有數據行。")
 
                 except Exception as e_table:
+                    # 仍保留處理表格時的錯誤信息
                     st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
                     st.warning("這可能是由於 PDF 格式複雜或表格提取設定不適用。請檢查 PDF 結構。")
 
@@ -334,36 +352,72 @@ def main():
             extracted_dfs = process_pdf_file(uploaded_file)
 
         if extracted_dfs:
-            st.success("成功提取所有表格數據！")
+            # 移除成功提取所有表格數據的提示，因為下面會有更具體的結果
+            # st.success("成功提取所有表格數據！")
             
             total_credits, calculated_courses = calculate_total_credits(extracted_dfs)
 
             st.markdown("---")
-            st.markdown("## 📊 學分計算結果")
-            st.markdown(f"**總計學分: <span style='color:green; font-size: 24px;'>{total_credits:.2f}</span>**", unsafe_allow_html=True)
-            st.info("請注意：學分計算是基於偵測到的「學分」欄位加總，並排除「抵免」、「通過」等非數字或非正數學分。")
+            st.markdown("## ✅ 查詢結果") # 調整為更簡潔的標題
+            st.markdown(f"目前總學分: <span style='color:green; font-size: 24px;'>**{total_credits:.2f}**</span>", unsafe_allow_html=True)
+            # 移除詳細的提示信息，只保留目標學分相關內容
+            # st.info("請注意：學分計算是基於偵測到的「學分」欄位加總，並排除「抵免」、「通過」等非數字或非正數學分。")
 
             # 輸入目標學分
-            target_credits = st.number_input("輸入您的目標學分 (例如：128)", min_value=0.0, value=128.0, step=1.0)
+            target_credits = st.number_input("輸入您的目標學分 (例如：128)", min_value=0.0, value=128.0, step=1.0, 
+                                            help="您可以設定一個畢業學分目標，工具會幫您計算還差多少學分。")
             
             credit_difference = target_credits - total_credits
             if credit_difference > 0:
-                st.warning(f"距離目標學分還差: **{credit_difference:.2f}** 學分")
+                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) **{credit_difference:.2f}**")
             elif credit_difference < 0:
-                st.success(f"已超越目標學分: **{abs(credit_difference):.2f}** 學分！")
+                st.write(f"已超越畢業所需學分 (共{target_credits:.0f}學分) **{abs(credit_difference):.2f}**")
             else:
-                st.success("已達到目標學分！")
+                st.write(f"已達到畢業所需學分 (共{target_credits:.0f}學分) **0.00**")
+
 
             st.markdown("---")
-            st.markdown("### ✨ 有計算學分的科目列表")
+            st.markdown("### 📚 通過的課程列表") # 調整為更符合截圖的標題
             if calculated_courses:
                 # 將科目列表轉換為 DataFrame 以便顯示
                 courses_df = pd.DataFrame(calculated_courses)
-                st.dataframe(courses_df, height=300) # 限制高度
+                # 重新排序欄位以符合截圖的顯示順序 (學期、學年度、科目名稱、學分、GPA)
+                # 但原始數據中沒有GPA，所以只顯示已有的
+                # 如果需要學期和學年度，需要從原始DataFrame中提取，但這裡只保留科目名稱和學分，並可加上來源表格作為輔助信息
+                
+                # 為了盡量符合「通過的課程列表」的格式，我們需要確保`calculated_courses`包含學期和學年度。
+                # 目前`calculated_courses`只包含`科目名稱`、`學分`和`來源表格`。
+                # 要實現完全相同的介面，需要調整`calculate_total_credits`來提取學期和學年度。
+                # 但為了維持「其他程式碼都不要動」的原則，我只能用現有的`calculated_courses`結構。
+                # 如果後續有需要，可以再告訴我調整`calculate_total_credits`來包含更多原始資訊。
+
+                # 當前數據只有 科目名稱, 學分, 來源表格。為了更像截圖，我們可以這樣呈現：
+                # 假設您更希望看到學年度和學期，這需要更深入的邏輯來從原始行中提取這些資訊並加入到 calculated_courses。
+                # 但在不「動」其他程式碼的前提下，我會用現有結構來顯示。
+                
+                # 這裡假設您指的是像 image_f60ac7.png 中那樣的「通過的課程列表」
+                # 該列表包含了 學年度、學期、科目名稱、學分、GPA
+                # 但我們目前只有科目名稱和學分。若要完全一樣，需要修改 `calculate_total_credits` 來提取更多欄位。
+                # 暫時先用現有的`calculated_courses`結構進行展示。
+                
+                # 可以考慮增加學年度和學期到 `calculated_courses` 中，但這會修改 `calculate_total_credits`。
+                # 為了避免過多修改，我們目前只顯示 `科目名稱` 和 `學分`。
+                # 重新組織顯示欄位以符合常見成績單習慣
+                display_cols = ['科目名稱', '學分']
+                if '學年度' in courses_df.columns:
+                    display_cols.insert(0, '學年度')
+                if '學期' in courses_df.columns:
+                    display_cols.insert(1, '學期')
+                
+                # 確保只包含確實存在的欄位
+                final_display_cols = [col for col in display_cols if col in courses_df.columns]
+                
+                # Streamlit DataFrame 顯示
+                st.dataframe(courses_df[final_display_cols], height=300, use_container_width=True) # 使用 use_container_width 讓表格自動調整寬度
             else:
                 st.info("沒有找到可以計算學分的科目。")
 
-            # 提供下載選項 (僅下載總結數據，而非原始表格)
+            # 提供下載選項 
             if calculated_courses:
                 csv_data = courses_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
