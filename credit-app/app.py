@@ -118,10 +118,10 @@ def is_grades_table(df):
     透過檢查是否存在預期的欄位關鍵字和數據內容模式來判斷。
     """
     if df.empty or len(df.columns) < 3:
+        # st.warning(f"is_grades_table: 表格為空或欄位少於3，跳過。 cols: {len(df.columns)}") # Diagnostic
         return False
 
     # Normalize column names for keyword matching
-    # 使用 make_unique_columns 處理潛在的重複和空欄位名稱
     df.columns = make_unique_columns(df.columns.tolist())
     normalized_columns = {re.sub(r'\s+', '', col).lower(): col for col in df.columns.tolist()}
     
@@ -140,6 +140,7 @@ def is_grades_table(df):
 
     # 滿足所有關鍵字標頭的表格，很可能是成績單表格
     if has_subject_col_header and (has_credit_col_header or has_gpa_col_header) and has_year_col_header and has_semester_col_header:
+        # st.success("is_grades_table: 成功透過標頭關鍵字識別為成績單表格。") # Diagnostic
         return True
     
     # 如果沒有直接的標頭匹配，檢查內容模式
@@ -190,8 +191,10 @@ def is_grades_table(df):
 
     # A table is considered a grades table if it has at least one of each crucial column type
     if potential_subject_cols and potential_credit_gpa_cols and potential_year_cols and potential_semester_cols:
+        # st.success("is_grades_table: 成功透過內容模式識別為成績單表格。") # Diagnostic
         return True
 
+    # st.info(f"is_grades_table: 未能識別為成績單表格。Found: Subject:{len(potential_subject_cols)>0}, Credit/GPA:{len(potential_credit_gpa_cols)>0}, Year:{len(potential_year_cols)>0}, Semester:{len(potential_semester_cols)>0}") # Diagnostic
     return False
 
 def calculate_total_credits(df_list):
@@ -523,14 +526,14 @@ def process_pdf_file(uploaded_file):
             for page_num, page in enumerate(pdf.pages):
                 current_page = page 
 
-                # 調整策略：使用 'text' 策略，並進一步調整 text_tolerance, snap_tolerance, join_tolerance
+                # 調整策略：使用 'text' 策略，並調整 text_tolerance, snap_tolerance, join_tolerance 到更平衡的值
                 table_settings = {
                     "vertical_strategy": "text", 
                     "horizontal_strategy": "text", 
-                    "snap_tolerance": 25,  # 進一步增大
-                    "join_tolerance": 25,  # 進一步增大
+                    "snap_tolerance": 15,  # 調整為更平衡的值
+                    "join_tolerance": 15,  # 調整為更平衡的值
                     "edge_min_length": 3, 
-                    "text_tolerance": 10,  # 進一步增大
+                    "text_tolerance": 5,  # 調整為更平衡的值
                     "min_words_vertical": 1, 
                     "min_words_horizontal": 1, 
                 }
@@ -652,7 +655,7 @@ def main():
             
             credit_difference = target_credits - total_credits
             if credit_difference > 0:
-                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) **{credit_difference:.2f}**")
+                st.write(f"距離畢業所需學分 (共{target_credits:.0f}學分) 還差 **{credit_difference:.2f}**")
             elif credit_difference < 0:
                 st.write(f"已超越畢業學分 (共{target_credits:.0f}學分) **{abs(credit_difference):.2f}**")
             else:
