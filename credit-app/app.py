@@ -14,11 +14,14 @@ def normalize_text(cell_content):
         return ""
 
     if hasattr(cell_content, 'text'):
-        return str(cell_content.text).strip()
+        # 移除多餘的換行和空格，只保留一個空格作為單詞間的分隔
+        # 例如 "學\n\n\n分" 變成 "學分"
+        # "A\n 2" 變成 "A 2"
+        return re.sub(r'\s+', ' ', str(cell_content.text)).strip()
     elif isinstance(cell_content, str):
-        return cell_content.strip()
+        return re.sub(r'\s+', ' ', cell_content).strip()
     else:
-        return str(cell_content).strip()
+        return re.sub(r'\s+', ' ', str(cell_content)).strip()
 
 def make_unique_columns(columns_list):
     """
@@ -28,21 +31,35 @@ def make_unique_columns(columns_list):
     seen = collections.defaultdict(int)
     unique_columns = []
     for col in columns_list:
-        # 更精確地處理可能的空白欄位或難以識別的欄位
-        original_col = col.strip() if col else "" # 確保處理 None 或空字串
-        if not original_col: # 如果清理後還是空的，給個通用名稱
-            original_col = f"Column_{len(unique_columns) + 1}"
+        # 確保原始列名在處理前進行初步清理，避免 " " 或 "\n" 導致的不一致
+        original_col_cleaned = re.sub(r'\s+', ' ', col if col else "").strip() # 將多個空格/換行替換為單個空格，並去除兩端空白
+        
+        # 如果清理後還是空的，給個通用名稱
+        if not original_col_cleaned:
+            original_col_cleaned = f"Column_{len(unique_columns) + 1}"
             
-        name = original_col
-        if seen[name] > 0:
-            name = f"{original_col}_{seen[original_col]}"
+        name = original_col_cleaned
+        
+        # 檢查是否已存在，並生成唯一名稱
+        if name in unique_columns: # 檢查當前處理的名稱是否已經被添加
+            seen[name] += 1
+            name = f"{original_col_cleaned}_{seen[original_col_cleaned]}"
+        
+        # 再次檢查，以防例如 "Column_1" 和 "Column_1_1" 的情況
         while name in unique_columns:
-             seen[original_col] += 1
-             name = f"{original_col}_{seen[original_col]}"
+             seen[original_col_cleaned] += 1
+             name = f"{original_col_cleaned}_{seen[original_col_cleaned]}"
         
         unique_columns.append(name)
-        seen[original_col] += 1
+        # 如果原始名稱已經被重複計數了，則更新其計數
+        if name != original_col_cleaned: # 只有當名稱被修改時才更新原始名稱的計數
+            seen[original_col_cleaned] += 1
+        else: # 如果名稱未被修改，確保其在 seen 中有至少一次記錄
+            if original_col_cleaned not in seen:
+                seen[original_col_cleaned] = 1
+
     return unique_columns
+
 
 def calculate_total_credits(df_list):
     """
@@ -53,26 +70,26 @@ def calculate_total_credits(df_list):
     
     st.subheader("學分計算分析")
 
-    # 定義可能的學分欄位名稱關鍵字，根據實際 PDF 格式調整
+    # 定義可能的學分欄位名稱關鍵字
     # 謝雲瑄的PDF中，學分欄位是 '學\n\n\n分'，經過normalize_text可能是 '學分' 或 '學 分'
     # 邱旭廷的PDF中，學分欄位是 '學分'
-    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分"] #
+    # 增加 "學分" (無空格) 和 "學 分" (有空格) 兩種常見情況
+    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分"] 
     
-    # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2
-    # 匹配數字 (整數或浮點數)，可以是獨立的數字，也可以在字串末尾
-    credit_pattern = re.compile(r'(\d+(\.\d+)?)\s*$') 
+    # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2, "3" -> 3
+    # 尋找字串中所有可能的數字 (整數或浮點數)，並取最後一個（通常是學分）
+    credit_pattern = re.compile(r'(\d+(\.\d+)?)') 
 
     for df_idx, df in enumerate(df_list):
         st.write(f"--- 分析表格 {df_idx + 1} ---")
-        st.write(f"偵測到的欄位名稱: `{list(df.columns)}`") # 輸出偵測到的所有欄位名稱
-
+        st.write(f"偵測到的原始欄位名稱: `{list(df.columns)}`") # 輸出偵測到的所有欄位名稱
+        
         found_credit_column = None
         for col in df.columns:
-            # 更加激進的清理，只保留中文、英文、數字、括號（針對GPA）
+            # 對欄位名進行清理，只保留中英數字，以便與關鍵字匹配
             # 移除非數字字母中文字符，並移除括號內內容用於關鍵字匹配，但保留原始列名
-            cleaned_col_for_match = "".join(char for char in col if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9' or char in '()').strip()
+            cleaned_col_for_match = "".join(char for char in col if '\u4e00' <= char <= '\u9fa5' or 'a' <= char <= 'z' or 'A' <= char <= 'Z' or '0' <= char <= '9').strip()
             
-            # 檢查是否包含關鍵字
             if any(keyword in cleaned_col_for_match for keyword in credit_column_keywords):
                 found_credit_column = col # 使用原始的欄位名稱
                 break
@@ -83,20 +100,27 @@ def calculate_total_credits(df_list):
                 processed_credits = []
                 for item in df[found_credit_column]:
                     item_str = str(item).strip()
-                    # 嘗試用正則表達式從字串末尾提取數字
-                    match = credit_pattern.search(item_str)
-                    if match:
+                    # 嘗試用正則表達式從字串中提取所有數字
+                    matches = credit_pattern.findall(item_str)
+                    
+                    credit_val = 0.0
+                    if matches:
+                        # 假設最後一個數字通常是學分，例如 "A 2" 中的 "2"
                         try:
-                            processed_credits.append(float(match.group(1)))
+                            credit_val = float(matches[-1][0]) # matches 是一個 (value, decimal_part) 的 tuple 列表
                         except ValueError:
-                            processed_credits.append(0.0) # 如果無法轉換為數字，計為0
+                            credit_val = 0.0
+                    
+                    # 處理"通過"、"抵免"等非數字情況，這在 to_numeric 時已經處理為 NaN，轉為0
+                    if item_str == "通過" or item_str == "抵免":
+                        processed_credits.append(0.0)
                     else:
-                        processed_credits.append(0.0) # 如果沒有匹配到數字，計為0
+                        processed_credits.append(credit_val)
 
-                credits = pd.Series(processed_credits)
+                credits_series = pd.Series(processed_credits)
                 
                 # 篩選掉 無效的學分 (例如 '通過' 或 '抵免' 這些文字已經在上一處理步驟中變為0)
-                valid_credits = credits[credits >= 0] # 包含 0 學分 (例如體育課)
+                valid_credits = credits_series[credits_series >= 0] # 包含 0 學分 (例如體育課)
                 
                 current_table_credits = valid_credits.sum()
                 total_credits += current_table_credits
@@ -132,6 +156,7 @@ def process_pdf_file(uploaded_file):
                     "join_tolerance": 3,
                     "edge_min_length": 3,
                     "text_tolerance": 1,
+                    # 移除 'snap_vertical' 和 'snap_horizontal'，因為它們已經被取代
                 }
 
                 try:
@@ -168,10 +193,9 @@ def process_pdf_file(uploaded_file):
                             num_columns_header = len(unique_columns)
                             cleaned_data_rows = []
                             for row in data_rows:
-                                # 這是修正 IndentationError 的關鍵部分：確保 `if/elif/else` 區塊內部有縮排
                                 if len(row) > num_columns_header:
                                     cleaned_data_rows.append(row[:num_columns_header])
-                                elif len(row) < num_columns_header: # 這一行就是之前報錯的 153 行
+                                elif len(row) < num_columns_header:
                                     cleaned_data_rows.append(row + [''] * (num_columns_header - len(row)))
                                 else:
                                     cleaned_data_rows.append(row)
