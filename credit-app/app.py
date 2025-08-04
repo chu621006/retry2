@@ -51,42 +51,60 @@ def main():
         st.success("檔案上傳成功！正在分析中...")
 
         try:
-            all_grades_data = [] # 確保在 try 區塊開始時定義
+            all_grades_data = []
             expected_columns_order = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
+            
+            # 用於除錯輸出
+            st.subheader("除錯資訊 (開發者專用) 🕵️")
+            debug_info_placeholder = st.empty() # 用於動態更新除錯信息
 
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
-                for page_num, page in enumerate(pdf.pages): # 加入 page_num 以便除錯
-                    # 這些是基於「邱旭廷成績總表.pdf」的觀察值，可能需要微調
-                    # 建議在本地使用 pdfplumber 的 debug 模式來視覺化這些線條
+                total_pages = len(pdf.pages)
+                debug_messages = []
+
+                for page_num, page in enumerate(pdf.pages):
+                    debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
+
+                    # 基於「邱旭廷成績總表.pdf」的觀察值
+                    # 嘗試使用 'stream' 模式，它對沒有嚴格線條的表格也有效
+                    # 並且保留 explicit_vertical_lines 輔助分割
                     explicit_vertical_lines = [
                         45,   90,  135,    210,         460,    500,  550 # 粗略估計的X坐標
                     ]
                     
-                    # 裁切頁面以專注於表格區域，避免頁面頂部和底部的非表格文字
-                    # 對於成績總表，表格內容大致從 Y=180 左右開始
-                    # page.height - 50 是為了避免裁切到頁腳資訊，如果表格延伸到頁底，可能需要調整為 page.height
-                    cropped_page = page.crop((0, 180, page.width, page.height - 50)) 
+                    # 裁切頁面以專注於表格區域
+                    # 再次檢查 cropping 是否合適，確保表格不會被切掉
+                    # 這裡放寬底部裁切，確保所有行都能被捕捉
+                    cropped_page = page.crop((0, 180, page.width, page.height)) 
 
                     table_settings = {
-                        "vertical_strategy": "explicit", # 明確指定垂直線
-                        "horizontal_strategy": "lines", # 依賴水平線來區分行
+                        "vertical_strategy": "explicit",
+                        "horizontal_strategy": "lines", # 仍然優先使用水平線
                         "explicit_vertical_lines": explicit_vertical_lines,
-                        "snap_tolerance": 5, # 增加對齊容忍度
+                        "snap_tolerance": 5, 
+                        "text_tolerance": 3, # 增加文字容忍度
+                        "join_tolerance": 3 # 增加連接容忍度
                     }
                     
                     tables = cropped_page.extract_tables(table_settings)
+                    
+                    debug_messages.append(f"頁面 {page_num + 1} 提取到 {len(tables)} 個表格。")
+                    
+                    if not tables:
+                        debug_messages.append(f"頁面 {page_num + 1} 未提取到任何表格。")
+                        continue # 如果該頁面沒有提取到任何表格，跳過
 
                     for table_idx, table in enumerate(tables):
-                        if not table or len(table) < 2: # 至少需要頭部和一行數據
+                        debug_messages.append(f"--- 處理頁面 {page_num + 1} 的表格 {table_idx + 1} ---")
+                        if not table or len(table) < 2: 
+                            debug_messages.append(f"  表格 {table_idx + 1} 無效 (行數不足或為空)。")
                             continue
 
-                        # 清理表頭，並處理 None 值
                         header = [col.replace('\n', ' ').strip() if col is not None else "" for col in table[0]]
-                        
-                        # 建立一個映射，從提取到的列名到標準列名，並記錄索引
-                        # 這使得程式碼對列順序和名稱變化更健壯
-                        col_to_index = {} # 存放標準列名 -> 提取表格中的索引
-                        index_to_col = {} # 存放提取表格中的索引 -> 標準列名
+                        debug_messages.append(f"  提取到的表頭: {header}")
+
+                        col_to_index = {}
+                        index_to_col = {}
 
                         for i, h_ext in enumerate(header):
                             if "學年度" in h_ext: col_to_index["學年度"] = i; index_to_col[i] = "學年度"
@@ -95,98 +113,81 @@ def main():
                             elif "科目名稱" in h_ext: col_to_index["科目名稱"] = i; index_to_col[i] = "科目名稱"
                             elif "學分" in h_ext: col_to_index["學分"] = i; index_to_col[i] = "學分"
                             elif "GPA" in h_ext: col_to_index["GPA"] = i; index_to_col[i] = "GPA"
-                            # 對於其他未識別的列，如果需要，可以給它們一個臨時名稱
-                            # else: index_to_col[i] = f"Unknown_Col_{i}"
-
-                        # 檢查所有關鍵列是否都被識別
+                        
                         critical_cols_found = all(col in col_to_index for col in ["學年度", "科目名稱", "學分", "GPA"])
+                        debug_messages.append(f"  關鍵列識別狀態: {critical_cols_found}")
                         if not critical_cols_found:
-                            continue # 如果關鍵列缺失，跳過此表格
+                            debug_messages.append("  缺少關鍵表頭，跳過此表格。")
+                            continue
 
-                        # 動態獲取關鍵列的索引
                         學年度_idx = col_to_index.get("學年度")
                         科目名稱_idx = col_to_index.get("科目名稱")
                         學分_idx = col_to_index.get("學分")
                         GPA_idx = col_to_index.get("GPA")
 
                         processed_rows = []
-                        current_row_data = None # 用於組合跨行數據
-
-                        for row in table[1:]: # 從數據行開始
-                            # 清理當前行的所有單元格
+                        current_row_data = None 
+                        
+                        for row_num_in_table, row in enumerate(table[1:]): # 從數據行開始
                             cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
-                            
+                            # debug_messages.append(f"    原始行 {row_num_in_table}: {row}") # 打印原始提取的行，很有用
+                            # debug_messages.append(f"    清洗後行 {row_num_in_table}: {cleaned_row}") # 打印清洗後的行
+
                             # 判斷是否為新的一行成績記錄：檢查「學年度」列是否有三位數字
                             if 學年度_idx is not None and cleaned_row[學年度_idx].isdigit() and len(cleaned_row[學年度_idx]) == 3:
                                 if current_row_data:
-                                    # 如果有之前未完成的行，先將其保存
                                     processed_rows.append(current_row_data)
-                                # 開始新的行數據
-                                current_row_data = cleaned_row
+                                current_row_data = list(cleaned_row)
                             elif current_row_data and 學年度_idx is not None and cleaned_row[學年度_idx] == '':
                                 # 判斷是否為「科目名稱」的續行 (學年度為空，且科目名稱有內容)
-                                if 科目名稱_idx is not None and cleaned_row[科目名稱_idx] != '':
-                                    # 將當前行的科目名稱內容合併到前一行
+                                if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and cleaned_row[科目名稱_idx] != '':
                                     current_row_data[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
-                                    # 注意：這裡假設只有科目名稱會跨行，如果其他列也會跨行，則需要更複雜的合併邏輯
-                                else:
-                                    # 如果是空行或其他不符合模式的行，則結束前一行並開始新的處理 (這裡我們直接忽略)
-                                    # 這防止了空行被錯誤地合併
+                                else: # 可能是完全空白的行，或者其他不屬於成績的行，結束當前行的處理
                                     if current_row_data:
                                         processed_rows.append(current_row_data)
                                     current_row_data = None
-                            else: # 不符合新行或續行的模式，可能是表格外的文字或雜項，直接忽略
-                                if current_row_data: # 如果有數據正在處理，則結束並保存
+                            else: # 不符合新行或續行的模式，直接忽略並結束當前行處理
+                                if current_row_data:
                                     processed_rows.append(current_row_data)
                                 current_row_data = None
-
 
                         if current_row_data: # 添加最後處理完的行
                             processed_rows.append(current_row_data)
 
+                        debug_messages.append(f"  處理後有效行數: {len(processed_rows)}")
+
                         if processed_rows:
-                            # 使用處理後的行數據創建 DataFrame
                             df_table = pd.DataFrame(processed_rows)
-                            
-                            # 使用 index_to_col 字典進行列重命名，確保正確的標準列名
                             df_table.rename(columns=index_to_col, inplace=True)
                             
-                            # 確保所有預期列都存在，如果缺失則添加並填充 NaN
                             for col_name in expected_columns_order:
                                 if col_name not in df_table.columns:
                                     df_table[col_name] = pd.NA
                             
-                            # 只保留預期列，並按正確順序排列
-                            df_table = df_table[expected_columns_order].copy() # 使用 .copy() 避免 SettingWithCopyWarning
+                            df_table = df_table[expected_columns_order].copy()
                             
-                            # 最終清理數據行中的 'None' 和 'nan' 字串
                             for col in df_table.columns:
-                                df_table[col] = df_table[col].astype(str).str.strip().str.replace('None', '').replace('nan', '')
+                                df_table[col] = df_table[col].astype(str).str.strip().replace('None', '').replace('nan', '')
 
                             all_grades_data.append(df_table)
-                
+                    debug_info_placeholder.text("\n".join(debug_messages)) # 在迴圈結束時更新除錯信息
+
             if not all_grades_data:
                 st.warning("未能從 PDF 中提取有效的成績數據。請檢查 PDF 格式或調整表格提取設定。")
-                # 如果沒有提取到任何數據，初始化一個空的 DataFrame，避免後續錯誤
                 full_grades_df = pd.DataFrame(columns=expected_columns_order)
                 return
 
             full_grades_df = pd.concat(all_grades_data, ignore_index=True)
 
-            # 數據清洗 (針對內容數據)
-            full_grades_df.dropna(how='all', inplace=True) # 移除所有列都是 NaN 的行
+            full_grades_df.dropna(how='all', inplace=True)
 
-            # 過濾掉那些明顯不是成績行的資料
-            # 確保 '學年度' 是三位數的數字
             full_grades_df = full_grades_df[
                 full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$')
             ]
             
-            # 過濾掉勞作成績
             if '科目名稱' in full_grades_df.columns:
                 full_grades_df = full_grades_df[~full_grades_df['科目名稱'].astype(str).str.contains('勞作成績', na=False)]
             
-            # GPA 列清理
             full_grades_df['GPA'] = full_grades_df['GPA'].astype(str).str.strip()
 
 
