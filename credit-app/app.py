@@ -16,8 +16,8 @@ def parse_gpa_to_numeric(gpa_str):
         'C+': 2.3, 'C': 2.0, 'C-': 1.7,
         'D+': 1.3, 'D': 1.0, 'D-': 0.7,
         'E': 0.0, 'F': 0.0,
-        '抵免': 999.0,
-        '通過': 999.0
+        '抵免': 999.0, # 抵免也算通過
+        '通過': 999.0  # 通過也算通過
     }
     return gpa_map.get(str(gpa_str).strip(), 0.0)
 
@@ -56,7 +56,7 @@ def main():
             
             st.subheader("除錯資訊 (開發者專用) 🕵️")
             debug_info_placeholder = st.empty()
-            debug_messages = [] # 清空每輪的 debug_messages
+            debug_messages = []
 
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                 total_pages = len(pdf.pages)
@@ -64,27 +64,18 @@ def main():
                 for page_num, page in enumerate(pdf.pages):
                     debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
 
-                    # 再次微調 Y 坐標，現在將裁剪範圍設得更寬，從頁面頂部開始
-                    # 這樣可以確保不漏掉任何潛在的表頭或數據
-                    # 我們將從一個很低的Y值開始裁切，讓pdfplumber有機會找到表格
-                    # 因為體育門檻表Y=70，而成績表Y=150，我們把裁切範圍放寬
                     top_y_crop = 60 # 從Y=60開始，確保捕捉到所有表格
-                    bottom_y_crop = page.height # 確保不裁切底部
+                    bottom_y_crop = page.height 
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
                     
-                    # 移除 explicit_vertical_lines，讓 pdfplumber 自己找線條
-                    # 有時手動指定反而會因為線條不完全對齊而導致問題
                     table_settings = {
-                        # "vertical_strategy": "explicit", # 改為 auto
-                        "horizontal_strategy": "lines", # 仍然優先使用水平線
-                        # "explicit_vertical_lines": explicit_vertical_lines, # 移除
+                        "horizontal_strategy": "lines", 
                         "snap_tolerance": 5, 
                         "text_tolerance": 3, 
                         "join_tolerance": 3,
-                        "min_words_horizontal": 1, # 增加對水平文字的最低要求
-                        "min_words_vertical": 1 # 增加對垂直文字的最低要求
-                        # "keep_blank_chars": True # 這個參數在某些版本可能導致 TypeError，先移除
+                        "min_words_horizontal": 1, 
+                        "min_words_vertical": 1 
                     }
                     
                     tables = cropped_page.extract_tables(table_settings)
@@ -97,28 +88,45 @@ def main():
 
                     for table_idx, table in enumerate(tables):
                         debug_messages.append(f"--- 處理頁面 {page_num + 1} 的表格 {table_idx + 1} ---")
-                        debug_messages.append(f"  原始提取的表格 (前5行): {table[:5]}") # 打印更多行
+                        debug_messages.append(f"  原始提取的表格 (前5行): {table[:5]}") 
 
                         if not table or len(table) < 2: 
                             debug_messages.append(f"  表格 {table_idx + 1} 無效 (行數不足或為空)。")
                             continue
 
-                        # 嘗試在表格的前幾行中找到表頭，而不是只看第一行
-                        potential_header_rows = table[0:min(len(table), 5)] # 檢查前5行
+                        # 嘗試在表格的前幾行中找到表頭，並使其更具彈性
+                        potential_header_rows = table[0:min(len(table), 5)] 
                         header_row_found = False
                         header = []
-                        header_row_start_idx = -1 # 初始化
+                        header_row_start_idx = -1 
+
+                        # 定義關鍵表頭詞，用於彈性匹配
+                        key_headers = ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA"]
 
                         for h_idx, h_row in enumerate(potential_header_rows):
-                            cleaned_h_row = [col.replace('\n', ' ').strip() if col is not None else "" for col in h_row]
-                            # 檢查是否有足夠的關鍵詞在這一行
-                            # 這裡更精確地檢查關鍵字，避免將數據行誤判為表頭
-                            # 確保關鍵列名精確存在
-                            if ("學年度" in cleaned_h_row and "科目名稱" in cleaned_h_row and 
-                                "學分" in cleaned_h_row and "GPA" in cleaned_h_row):
-                                header = cleaned_h_row
+                            # 清理每個單元格，並將其連接成一個字符串，以便進行子字符串匹配
+                            cleaned_h_row_str = " ".join([col.replace('\n', ' ').strip() if col is not None else "" for col in h_row])
+                            cleaned_h_row_list = [col.replace('\n', ' ').strip() if col is not None else "" for col in h_row] # 保持列表形式用於直接匹配
+
+                            # 判斷是否包含所有關鍵詞 (不一定在同一個單元格，但關鍵詞必須都在這行中)
+                            # 使用 all() 和 any() 組合來檢查關鍵詞是否在列中，更靈活
+                            is_potential_header = True
+                            for kw in ["學年度", "科目名稱", "學分", "GPA"]: # 僅檢查幾個最重要的關鍵詞
+                                if not any(kw in cell for cell in cleaned_h_row_list):
+                                    is_potential_header = False
+                                    break
+                            
+                            # 額外判斷：確保這行看起來像表頭而不是數據行
+                            # 例如，表頭的單元格通常是簡短的描述性文字，而不會是像 '111' 這樣的純數字開頭的學年度
+                            # 這個判斷需要小心，因為它可能會過濾掉真實的表頭
+                            # 更好的方法是檢查這行是否有足夠的非數字內容，或者檢查下一行是否符合數據行模式
+                            # 目前先不加複雜判斷，依賴關鍵詞匹配
+
+                            if is_potential_header:
+                                # 確定是表頭後，使用原始的 cleaned_h_row_list 作為 header，因為它的結構最接近
+                                header = cleaned_h_row_list
                                 header_row_found = True
-                                header_row_start_idx = h_idx # 記錄表頭的索引
+                                header_row_start_idx = h_idx 
                                 break 
                         
                         if not header_row_found:
@@ -130,6 +138,7 @@ def main():
                         col_to_index = {} 
                         index_to_col = {} 
 
+                        # 使用更靈活的方式來映射列名到索引
                         for i, h_ext in enumerate(header):
                             if "學年度" in h_ext: col_to_index["學年度"] = i; index_to_col[i] = "學年度"
                             elif "學期" in h_ext: col_to_index["學期"] = i; index_to_col[i] = "學期"
@@ -140,7 +149,7 @@ def main():
                         
                         critical_cols_found = all(col in col_to_index for col in ["學年度", "科目名稱", "學分", "GPA"])
                         debug_messages.append(f"  關鍵列索引映射狀態: {critical_cols_found}")
-                        if not critical_cols_found: # 理論上這裡不會再 False，因為上面已經檢查過
+                        if not critical_cols_found: 
                             debug_messages.append("  缺少關鍵表頭，跳過此表格。")
                             continue
 
@@ -152,8 +161,7 @@ def main():
                         processed_rows = []
                         current_row_data = None 
                         
-                        # 數據行應該從找到的表頭行之後開始
-                        for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): # 從表頭的下一行開始處理數據
+                        for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
                             cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
                             
                             # 判斷是否為新的一行成績記錄：檢查「學年度」列是否有三位數字
@@ -165,7 +173,6 @@ def main():
                                 # 判斷是否為「科目名稱」的續行 (學年度為空，且科目名稱有內容)
                                 if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and cleaned_row[科目名稱_idx] != '':
                                     current_row_data[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
-                                # 處理可能出現在 GPA 欄位的換行（例如最後一頁的勞作成績）
                                 elif GPA_idx is not None and len(cleaned_row) > GPA_idx and cleaned_row[GPA_idx] != '':
                                     current_row_data[GPA_idx] += " " + cleaned_row[GPA_idx]
                                 else: 
@@ -177,7 +184,7 @@ def main():
                                     processed_rows.append(current_row_data)
                                 current_row_data = None
 
-                        if current_row_data: # 添加最後處理完的行
+                        if current_row_data: 
                             processed_rows.append(current_row_data)
 
                         debug_messages.append(f"  處理後有效行數: {len(processed_rows)}")
@@ -198,7 +205,6 @@ def main():
 
                             all_grades_data.append(df_table)
                     
-                    # 更新每次頁面處理後的 debug_info_placeholder
                     debug_info_placeholder.text("\n".join(debug_messages)) 
 
             if not all_grades_data:
