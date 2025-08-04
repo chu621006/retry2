@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import pdfplumber
 import collections
-import re 
+import re
 
 # --- 輔助函數 ---
 def normalize_text(cell_content):
@@ -118,6 +118,8 @@ def is_grades_table(df):
         return False
 
     # Normalize column names for keyword matching
+    # 使用 make_unique_columns 處理潛在的重複和空欄位名稱
+    df.columns = make_unique_columns(df.columns.tolist())
     normalized_columns = {re.sub(r'\s+', '', col).lower(): col for col in df.columns.tolist()}
     
     credit_keywords = ["學分", "credits", "credit", "學分數"]
@@ -133,16 +135,17 @@ def is_grades_table(df):
     has_year_col_header = any(any(k in norm_col for k in year_keywords) for norm_col in normalized_columns.keys())
     has_semester_col_header = any(any(k in norm_col for k in semester_keywords) for norm_col in normalized_columns.keys())
 
+    # 滿足所有關鍵字標頭的表格，很可能是成績單表格
     if has_subject_col_header and (has_credit_col_header or has_gpa_col_header) and has_year_col_header and has_semester_col_header:
         return True
     
-    # If no direct header match, check content patterns
+    # 如果沒有直接的標頭匹配，檢查內容模式
     potential_subject_cols = []
     potential_credit_gpa_cols = []
     potential_year_cols = []
     potential_semester_cols = []
 
-    # Sample a few rows to determine column types reliably
+    # 採樣前幾行數據來判斷欄位類型
     sample_rows_df = df.head(min(len(df), 20)) 
 
     for col_name in df.columns:
@@ -155,7 +158,7 @@ def is_grades_table(df):
         subject_like_cells = sum(1 for item_str in sample_data 
                                  if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) >= 2
                                  and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str)
-                                 and not item_str.lower() in ["通過", "抵免", "pass", "exempt"])
+                                 and not item_str.lower() in ["通過", "抵免", "pass", "exempt", "未知科目"])
         if subject_like_cells / total_sample_count >= 0.4:
             potential_subject_cols.append(col_name)
 
@@ -163,7 +166,9 @@ def is_grades_table(df):
         credit_gpa_like_cells = 0
         for item_str in sample_data:
             credit_val, gpa_val = parse_credit_and_gpa(item_str)
-            if (0.0 < credit_val <= 10.0) or (gpa_val and re.match(r'^[A-Fa-f][+\-]?$', gpa_val)) or (item_str.lower() in ["通過", "抵免", "pass", "exempt"]):
+            if (0.0 < credit_val <= 10.0) or \
+               (gpa_val and re.match(r'^[A-Fa-f][+\-]?$', gpa_val)) or \
+               (item_str.lower() in ["通過", "抵免", "pass", "exempt"]):
                 credit_gpa_like_cells += 1
         if credit_gpa_like_cells / total_sample_count >= 0.4:
             potential_credit_gpa_cols.append(col_name)
@@ -207,6 +212,9 @@ def calculate_total_credits(df_list):
     for df_idx, df in enumerate(df_list):
         if df.empty or len(df.columns) < 3: # Skip empty or too small dataframes
             continue
+        
+        # 確保 DataFrame 的欄位名稱是唯一的
+        df.columns = make_unique_columns(df.columns.tolist())
 
         found_credit_column = None
         found_subject_column = None 
@@ -219,25 +227,44 @@ def calculate_total_credits(df_list):
         
         # Try to find columns by header names first
         for k in credit_column_keywords:
-            if k in normalized_df_columns:
-                found_credit_column = normalized_df_columns[k]
-                break
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_credit_column = original_col_name
+                        break
+            if found_credit_column: break
+        
         for k in subject_column_keywords:
-            if k in normalized_df_columns:
-                found_subject_column = normalized_df_columns[k]
-                break
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_subject_column = original_col_name
+                        break
+            if found_subject_column: break
+
         for k in gpa_column_keywords:
-            if k in normalized_df_columns:
-                found_gpa_column = normalized_df_columns[k]
-                break
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_gpa_column = original_col_name
+                        break
+            if found_gpa_column: break
+
         for k in year_column_keywords:
-            if k in normalized_df_columns:
-                found_year_column = normalized_df_columns[k]
-                break
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_year_column = original_col_name
+                        break
+            if found_year_column: break
+        
         for k in semester_column_keywords:
-            if k in normalized_df_columns:
-                found_semester_column = normalized_df_columns[k]
-                break
+            if any(k in norm_col for norm_col in normalized_df_columns.keys()):
+                for norm_col_key, original_col_name in normalized_df_columns.items():
+                    if k in norm_col_key:
+                        found_semester_column = original_col_name
+                        break
+            if found_semester_column: break
 
         # If headers not found, try to infer based on content patterns (potential_cols)
         potential_credit_cols = []
@@ -265,7 +292,7 @@ def calculate_total_credits(df_list):
             subject_vals_found = 0
             for item_str in sample_data:
                 # Subject should contain Chinese characters, be reasonably long, and not look like just a number or GPA
-                if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) >= 2 and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str) and not item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
+                if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) >= 2 and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str) and not item_str.lower() in ["通過", "抵免", "pass", "exempt", "未知科目"]: 
                     subject_vals_found += 1
             if subject_vals_found / total_sample_count >= 0.4:
                 potential_subject_cols.append(col_name)
@@ -273,7 +300,7 @@ def calculate_total_credits(df_list):
             gpa_vals_found = 0
             for item_str in sample_data:
                 # GPA can be letter grades, or sometimes numerical (e.g., 80, 75). Also '通過' etc.
-                if re.match(r'^[A-Fa-f][+\-]?' , item_str) or (item_str.isdigit() and len(item_str) <=3) or item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
+                if re.match(r'^[A-Fa-f][+\-]' , item_str) or (item_str.isdigit() and len(item_str) <=3) or item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
                     gpa_vals_found += 1
             if gpa_vals_found / total_sample_count >= 0.4:
                 potential_gpa_cols.append(col_name)
@@ -345,7 +372,7 @@ def calculate_total_credits(df_list):
                     # Skip rows that appear to be empty or just administrative text
                     row_content = [normalize_text(str(cell)) for cell in row]
                     if all(cell == "" for cell in row_content) or \
-                       any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell for cell in row_content): # Filter out known irrelevant rows
+                       any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell or "勞作" in cell for cell in row_content): # Filter out known irrelevant rows
                         continue
 
                     extracted_credit = 0.0
@@ -392,7 +419,8 @@ def calculate_total_credits(df_list):
                         # Only accept as subject name if it's reasonably long and contains Chinese characters, not just numbers or GPA
                         if len(temp_name) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name) and \
                            not temp_name.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name) and \
-                           not temp_name.lower() in ["通過", "抵免", "pass", "exempt"]: 
+                           not temp_name.lower() in ["通過", "抵免", "pass", "exempt", "未知科目"] and \
+                           not any(kw in temp_name for kw in ["學年度", "學期", "選課代號", "科目名稱", "學分", "GPA", "本表", "備註"]): # Filter out header-like or administrative text
                             course_name = temp_name
                         elif not temp_name: # If subject cell is empty, try adjacent columns if they look like subject names
                             try:
@@ -528,6 +556,7 @@ def process_pdf_file(uploaded_file):
                         # Try to use the first row as header
                         if len(processed_table) > 1:
                             potential_header_row = processed_table[0]
+                            # 使用 make_unique_columns 處理潛在的重複標頭問題
                             temp_unique_columns = make_unique_columns(potential_header_row)
                             temp_data_rows = processed_table[1:]
 
@@ -546,6 +575,7 @@ def process_pdf_file(uploaded_file):
                                     df_table_with_assumed_header = pd.DataFrame(cleaned_temp_data_rows, columns=temp_unique_columns)
                                     if is_grades_table(df_table_with_assumed_header):
                                         df_table_to_add = df_table_with_assumed_header
+                                        st.success(f"頁面 {page_num + 1} 的表格 {table_idx + 1} 已識別為成績單表格 (帶有偵測到的標頭)。")
                                 except Exception as e_df_temp:
                                     # st.warning(f"頁面 {page_num + 1} 表格 {table_idx + 1} 嘗試用第一行作標頭轉換為 DataFrame 時發生錯誤: `{e_df_temp}`")
                                     pass # Suppress warning for now, try generic columns
