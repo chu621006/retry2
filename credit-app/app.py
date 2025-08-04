@@ -138,6 +138,7 @@ def main():
                             continue
 
                         學年度_idx = col_to_index.get("學年度")
+                        學期_idx = col_to_index.get("學期") # Added for better debugging
                         科目名稱_idx = col_to_index.get("科目名稱")
                         學分_idx = col_to_index.get("學分")
                         GPA_idx = col_to_index.get("GPA")
@@ -145,63 +146,82 @@ def main():
                         processed_rows = []
                         current_row_data = None 
                         
+                        # 從表頭的下一行開始遍歷
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
                             cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
                             
-                            debug_messages.append(f"    原始數據行 {row_num_in_table}: {row}") 
-                            debug_messages.append(f"    清洗後數據行 {row_num_in_table}: {cleaned_row}") 
+                            debug_messages.append(f"    --- 處理原始數據行 {row_num_in_table + header_row_start_idx + 1} ---")
+                            debug_messages.append(f"    原始數據行內容: {row}") 
+                            debug_messages.append(f"    清洗後數據行內容: {cleaned_row}") 
 
                             is_new_grade_row = False
-                            if 學年度_idx is not None and len(cleaned_row) > 學年度_idx:
-                                # 檢查學年度是否為數字且長度為3，且不為空字串
-                                if cleaned_row[學年度_idx].isdigit() and len(cleaned_row[學年度_idx]) == 3:
-                                    is_new_grade_row = True
-                                # Add a flexible check for the "學年度" column if it's not a digit but has text,
-                                # to handle potential non-numeric entries at the start of a row that might not be a valid year
-                                elif cleaned_row[學年度_idx].strip() != '' and not cleaned_row[學年度_idx].isdigit():
-                                    debug_messages.append(f"      Warning: 學年度 column has non-digit content: '{cleaned_row[學年度_idx]}'. Skipping as new row start.")
-                                    # If it's not a digit, it's likely not a new grade entry for the year.
-                                    # This ensures we don't start a new row with misparsed headers or other text.
-                                    pass # do nothing, let it fall through to continuation or ignored row
+                            學年度_val = cleaned_row[學年度_idx] if 學年度_idx is not None and len(cleaned_row) > 學年度_idx else ""
+
+                            # Check for new row criteria: 学年度 is a 3-digit number
+                            if 學年度_val.isdigit() and len(學年度_val) == 3:
+                                is_new_grade_row = True
+                                debug_messages.append(f"      判斷: 滿足新的成績行條件 (學年度='{學年度_val}')")
+                            elif 學年度_val.strip() != '' and not 學年度_val.isdigit():
+                                debug_messages.append(f"      判斷: 學年度欄位有非數字內容或非3位數字 '{學年度_val}'，不作為新行開始。")
+                            else:
+                                debug_messages.append(f"      判斷: 學年度欄位為空或不符合數字格式 '{學年度_val}'。")
 
                             if is_new_grade_row:
                                 if current_row_data:
                                     processed_rows.append(current_row_data)
+                                    debug_messages.append(f"      -> 前一行完成，添加到 processed_rows: {processed_rows[-1]}")
                                 current_row_data = list(cleaned_row)
                                 debug_messages.append(f"      -> 新的成績行開始: {current_row_data}")
-                            elif current_row_data: # 是續行或空行
-                                # 判斷是否為「科目名稱」的續行 (學年度為空，且科目名稱有內容)
-                                is_subject_continuation = (科目名稱_idx is not None and 
-                                                           len(cleaned_row) > 科目名稱_idx and 
-                                                           cleaned_row[科目名稱_idx].strip() != '')
+                            elif current_row_data: # 如果當前有正在處理的行，檢查是否為續行
+                                debug_messages.append(f"      判斷: 檢查是否為當前行續行...")
+
+                                # Check if it's a continuation of "科目名稱" (學年度 is empty, 科目名稱 has content)
+                                is_subject_continuation = False
+                                if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and 科目名稱_idx < len(current_row_data):
+                                    if cleaned_row[學年度_idx].strip() == '' and cleaned_row[科目名稱_idx].strip() != '':
+                                        is_subject_continuation = True
+                                        debug_messages.append(f"        -> 科目名稱續行：學年度為空，科目名稱有內容。")
+                                    else:
+                                        debug_messages.append(f"        -> 科目名稱續行條件不滿足：學年度='{cleaned_row[學年度_idx]}' 科目名稱='{cleaned_row[科目名稱_idx]}'")
+
+                                # Check if it's a continuation of "GPA" (學年度 is empty, GPA has content)
+                                is_gpa_continuation = False
+                                if GPA_idx is not None and len(cleaned_row) > GPA_idx and GPA_idx < len(current_row_data):
+                                    if cleaned_row[學年度_idx].strip() == '' and cleaned_row[GPA_idx].strip() != '':
+                                        is_gpa_continuation = True
+                                        debug_messages.append(f"        -> GPA 續行：學年度為空，GPA有內容。")
+                                    else:
+                                        debug_messages.append(f"        -> GPA 續行條件不滿足：學年度='{cleaned_row[學年度_idx]}' GPA='{cleaned_row[GPA_idx]}'")
                                 
-                                # 處理 GPA 欄位多行合併的續行
-                                is_gpa_continuation = (GPA_idx is not None and 
-                                                       len(cleaned_row) > GPA_idx and 
-                                                       cleaned_row[GPA_idx].strip() != '')
-                                
+                                # Check if the row is completely empty (all cells are empty strings after stripping)
+                                is_completely_empty_row = not any(c.strip() for c in cleaned_row)
+                                if is_completely_empty_row:
+                                    debug_messages.append(f"        -> 檢測到完全空白行。")
+
                                 if is_subject_continuation:
                                     current_row_data[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
-                                    debug_messages.append(f"      -> 科目名稱續行合併: {current_row_data}")
+                                    debug_messages.append(f"      -> 科目名稱續行合併後: {current_row_data}")
                                 elif is_gpa_continuation:
                                     current_row_data[GPA_idx] += " " + cleaned_row[GPA_idx]
-                                    debug_messages.append(f"      -> GPA續行合併: {current_row_data}")
-                                elif not any(c.strip() for c in cleaned_row): # 如果是完全空白的行，結束當前行處理
-                                    if current_row_data:
+                                    debug_messages.append(f"      -> GPA 續行合併後: {current_row_data}")
+                                elif is_completely_empty_row:
+                                    if current_row_data: # 如果當前有數據，則結束此行並添加到 processed_rows
                                         processed_rows.append(current_row_data)
+                                        debug_messages.append(f"      -> 檢測到空白行，前一行完成並添加到 processed_rows: {processed_rows[-1]}")
                                     current_row_data = None
-                                    debug_messages.append(f"      -> 檢測到空白行，結束當前行。")
-                                else: # 不符合新行或續行的模式，但也不是完全空白，可能是其他雜訊，結束當前行處理
-                                    if current_row_data:
+                                else: # 不符合新行、科目名稱續行、GPA續行、也不是完全空白行
+                                    debug_messages.append(f"      -> 不符合任何模式 (新行/續行/空白行)，視為雜訊或錯誤，結束當前行。")
+                                    if current_row_data: # 如果當前有數據，則結束此行並添加到 processed_rows
                                         processed_rows.append(current_row_data)
+                                        debug_messages.append(f"      -> 將當前行添加到 processed_rows: {processed_rows[-1]}")
                                     current_row_data = None
-                                    debug_messages.append(f"      -> 不符合模式的雜訊行，結束當前行。")
                             else: # current_row_data 為 None，且不是新行，直接忽略
-                                debug_messages.append(f"      -> 未開始新行且非續行，跳過。")
+                                debug_messages.append(f"      -> current_row_data 為空，且當前行不符合新行條件，跳過。")
                                 pass 
 
-                        if current_row_data: 
+                        if current_row_data: # 最後一行結束時，如果還有未添加到 processed_rows 的數據，則添加
                             processed_rows.append(current_row_data)
+                            debug_messages.append(f"  最後一行完成，添加到 processed_rows: {processed_rows[-1]}")
 
                         debug_messages.append(f"  處理後有效行數: {len(processed_rows)}")
                         debug_messages.append(f"  處理後部分數據 (前5行): {processed_rows[:5]}")
