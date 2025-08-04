@@ -64,19 +64,25 @@ def main():
                 for page_num, page in enumerate(pdf.pages):
                     debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
 
+                    # Note: Cropping might sometimes exclude parts of tables,
+                    # but for this specific PDF, it seems necessary to avoid headers above the table.
+                    # We will keep it for now.
                     top_y_crop = 60 
                     bottom_y_crop = page.height 
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
                     
+                    # --- 關鍵改動：調整表格提取設定 ---
                     table_settings = {
-                        "horizontal_strategy": "lines", 
-                        "snap_tolerance": 5, 
-                        "text_tolerance": 3, 
-                        "join_tolerance": 3,
+                        "horizontal_strategy": "lines",  # Keep horizontal lines for rows
+                        "vertical_strategy": "lines",    # Explicitly use vertical lines for columns
+                        "snap_tolerance": 3,             # Reduce tolerance slightly for snapping to lines
+                        "text_tolerance": 2,             # Reduce text tolerance for column detection
+                        "join_tolerance": 2,             # Reduce join tolerance
                         "min_words_horizontal": 1, 
                         "min_words_vertical": 1 
                     }
+                    debug_messages.append(f"  使用的 table_settings: {table_settings}")
                     
                     tables = cropped_page.extract_tables(table_settings)
                     
@@ -100,7 +106,8 @@ def main():
                         header_row_start_idx = -1 
 
                         for h_idx, h_row in enumerate(potential_header_rows):
-                            cleaned_h_row_list = [col.replace('\n', ' ').strip() if col is not None else "" for col in h_row]
+                            # 使用列表推導式，並確保每個元素都是字串
+                            cleaned_h_row_list = [str(col).replace('\n', ' ').strip() if col is not None else "" for col in h_row]
 
                             is_potential_header = True
                             for kw in ["學年度", "科目名稱", "學分", "GPA"]: 
@@ -138,7 +145,8 @@ def main():
                             continue
 
                         學年度_idx = col_to_index.get("學年度")
-                        學期_idx = col_to_index.get("學期") # Added for better debugging
+                        學期_idx = col_to_index.get("學期")
+                        選課代號_idx = col_to_index.get("選課代號") # Added for more robust parsing logic
                         科目名稱_idx = col_to_index.get("科目名稱")
                         學分_idx = col_to_index.get("學分")
                         GPA_idx = col_to_index.get("GPA")
@@ -146,9 +154,9 @@ def main():
                         processed_rows = []
                         current_row_data = None 
                         
-                        # 從表頭的下一行開始遍歷
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
-                            cleaned_row = [c.replace('\n', ' ').strip() if c is not None else "" for c in row]
+                            # Convert all elements to string before stripping to avoid issues with None/non-string types
+                            cleaned_row = [str(c).replace('\n', ' ').strip() if c is not None else "" for c in row]
                             
                             debug_messages.append(f"    --- 處理原始數據行 {row_num_in_table + header_row_start_idx + 1} ---")
                             debug_messages.append(f"    原始數據行內容: {row}") 
@@ -156,42 +164,46 @@ def main():
 
                             is_new_grade_row = False
                             學年度_val = cleaned_row[學年度_idx] if 學年度_idx is not None and len(cleaned_row) > 學年度_idx else ""
+                            選課代號_val = cleaned_row[選課代號_idx] if 選課代號_idx is not None and len(cleaned_row) > 選課代號_idx else ""
+                            科目名稱_val = cleaned_row[科目名稱_idx] if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx else ""
 
-                            # Check for new row criteria: 学年度 is a 3-digit number
-                            if 學年度_val.isdigit() and len(學年度_val) == 3:
+                            # Primary check for a new grade row: 학年度 is a 3-digit number AND 選課代號 is not empty
+                            # Added check for 選課代號 to make the new row detection more robust,
+                            # as some non-grade lines might have a 3-digit number.
+                            if 學年度_val.isdigit() and len(學年度_val) == 3 and 選課代號_val.strip() != '':
                                 is_new_grade_row = True
-                                debug_messages.append(f"      判斷: 滿足新的成績行條件 (學年度='{學年度_val}')")
-                            elif 學年度_val.strip() != '' and not 學年度_val.isdigit():
+                                debug_messages.append(f"      判斷: 滿足新的成績行條件 (學年度='{學年度_val}', 選課代號='{選課代號_val}')")
+                            elif 學年度_val.strip() != '' and (not 學年度_val.isdigit() or len(學年度_val) != 3):
                                 debug_messages.append(f"      判斷: 學年度欄位有非數字內容或非3位數字 '{學年度_val}'，不作為新行開始。")
                             else:
-                                debug_messages.append(f"      判斷: 學年度欄位為空或不符合數字格式 '{學年度_val}'。")
+                                debug_messages.append(f"      判斷: 學年度欄位為空或不符合數字格式 '{學年度_val}' 或選課代號為空。")
 
                             if is_new_grade_row:
                                 if current_row_data:
+                                    # Before appending, ensure current_row_data has enough columns
+                                    # Pad with empty strings if necessary
+                                    while len(current_row_data) < max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
+                                        current_row_data.append("")
                                     processed_rows.append(current_row_data)
                                     debug_messages.append(f"      -> 前一行完成，添加到 processed_rows: {processed_rows[-1]}")
                                 current_row_data = list(cleaned_row)
                                 debug_messages.append(f"      -> 新的成績行開始: {current_row_data}")
-                            elif current_row_data: # 如果當前有正在處理的行，檢查是否為續行
+                            elif current_row_data: # If there's an ongoing row, check for continuation
                                 debug_messages.append(f"      判斷: 檢查是否為當前行續行...")
 
-                                # Check if it's a continuation of "科目名稱" (學年度 is empty, 科目名稱 has content)
+                                # Continuation conditions: 學年度 and 選課代號 are empty, but 科目名稱 or GPA has content
                                 is_subject_continuation = False
-                                if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and 科目名稱_idx < len(current_row_data):
-                                    if cleaned_row[學年度_idx].strip() == '' and cleaned_row[科目名稱_idx].strip() != '':
-                                        is_subject_continuation = True
-                                        debug_messages.append(f"        -> 科目名稱續行：學年度為空，科目名稱有內容。")
-                                    else:
-                                        debug_messages.append(f"        -> 科目名稱續行條件不滿足：學年度='{cleaned_row[學年度_idx]}' 科目名稱='{cleaned_row[科目名稱_idx]}'")
-
-                                # Check if it's a continuation of "GPA" (學年度 is empty, GPA has content)
+                                if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and 科目名稱_idx < len(current_row_data) \
+                                   and 學年度_val.strip() == '' and 選課代號_val.strip() == '' and 科目名稱_val.strip() != '':
+                                    is_subject_continuation = True
+                                    debug_messages.append(f"        -> 科目名稱續行：學年度/選課代號為空，科目名稱有內容。")
+                                
                                 is_gpa_continuation = False
-                                if GPA_idx is not None and len(cleaned_row) > GPA_idx and GPA_idx < len(current_row_data):
-                                    if cleaned_row[學年度_idx].strip() == '' and cleaned_row[GPA_idx].strip() != '':
-                                        is_gpa_continuation = True
-                                        debug_messages.append(f"        -> GPA 續行：學年度為空，GPA有內容。")
-                                    else:
-                                        debug_messages.append(f"        -> GPA 續行條件不滿足：學年度='{cleaned_row[學年度_idx]}' GPA='{cleaned_row[GPA_idx]}'")
+                                GPA_val = cleaned_row[GPA_idx] if GPA_idx is not None and len(cleaned_row) > GPA_idx else ""
+                                if GPA_idx is not None and len(cleaned_row) > GPA_idx and GPA_idx < len(current_row_data) \
+                                   and 學年度_val.strip() == '' and 選課代號_val.strip() == '' and GPA_val.strip() != '':
+                                    is_gpa_continuation = True
+                                    debug_messages.append(f"        -> GPA 續行：學年度/選課代號為空，GPA有內容。")
                                 
                                 # Check if the row is completely empty (all cells are empty strings after stripping)
                                 is_completely_empty_row = not any(c.strip() for c in cleaned_row)
@@ -205,21 +217,27 @@ def main():
                                     current_row_data[GPA_idx] += " " + cleaned_row[GPA_idx]
                                     debug_messages.append(f"      -> GPA 續行合併後: {current_row_data}")
                                 elif is_completely_empty_row:
-                                    if current_row_data: # 如果當前有數據，則結束此行並添加到 processed_rows
+                                    if current_row_data: 
+                                        while len(current_row_data) < max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
+                                            current_row_data.append("")
                                         processed_rows.append(current_row_data)
                                         debug_messages.append(f"      -> 檢測到空白行，前一行完成並添加到 processed_rows: {processed_rows[-1]}")
                                     current_row_data = None
-                                else: # 不符合新行、科目名稱續行、GPA續行、也不是完全空白行
+                                else: # Does not fit new row, subject continuation, GPA continuation, or completely empty
                                     debug_messages.append(f"      -> 不符合任何模式 (新行/續行/空白行)，視為雜訊或錯誤，結束當前行。")
-                                    if current_row_data: # 如果當前有數據，則結束此行並添加到 processed_rows
+                                    if current_row_data: 
+                                        while len(current_row_data) < max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
+                                            current_row_data.append("")
                                         processed_rows.append(current_row_data)
                                         debug_messages.append(f"      -> 將當前行添加到 processed_rows: {processed_rows[-1]}")
                                     current_row_data = None
-                            else: # current_row_data 為 None，且不是新行，直接忽略
+                            else: # current_row_data is None, and it's not a new row, so ignore
                                 debug_messages.append(f"      -> current_row_data 為空，且當前行不符合新行條件，跳過。")
                                 pass 
 
-                        if current_row_data: # 最後一行結束時，如果還有未添加到 processed_rows 的數據，則添加
+                        if current_row_data: 
+                            while len(current_row_data) < max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
+                                current_row_data.append("")
                             processed_rows.append(current_row_data)
                             debug_messages.append(f"  最後一行完成，添加到 processed_rows: {processed_rows[-1]}")
 
@@ -227,7 +245,11 @@ def main():
                         debug_messages.append(f"  處理後部分數據 (前5行): {processed_rows[:5]}")
 
                         if processed_rows:
-                            df_table = pd.DataFrame(processed_rows)
+                            # Create DataFrame with expected number of columns to avoid index out of bounds
+                            max_col_index = max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) if processed_rows else 0
+                            df_table = pd.DataFrame(processed_rows, columns=[None]*(max_col_index + 1))
+                            
+                            # Rename columns using the index_to_col map
                             df_table.rename(columns=index_to_col, inplace=True)
                             
                             for col_name in expected_columns_order:
