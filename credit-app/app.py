@@ -38,6 +38,31 @@ def analyze_student_grades(df):
 
     return total_earned_credits, remaining_credits_to_graduate, passed_courses_df
 
+# --- 3. 字元正規化函數 ---
+def normalize_text(text):
+    """
+    Normalizes specific problematic Unicode characters often found in PDF extraction
+    to their standard Traditional Chinese/ASCII counterparts.
+    """
+    if text is None:
+        return ""
+    text = str(text).replace('\n', ' ').strip()
+    # Normalize common full-width or variant characters
+    text = text.replace('⽬', '目') # CJK UNIFIED IDEOGRAPH-2F4D -> CJK UNIFIED IDEOGRAPH-76EE (目)
+    text = text.replace('⽇', '日') # CJK UNIFIED IDEOGRAPH-2F31 -> CJK UNIFIED IDEOGRAPH-65E5 (日)
+    text = text.replace('（', '(') # FULLWIDTH LEFT PARENTHESIS -> LEFT PARENTHESIS
+    text = text.replace('）', ')') # FULLWIDTH RIGHT PARENTHESIS -> RIGHT PARENTHESIS
+    text = text.replace('⼀', '一') # CJK RADICAL ONE -> CJK UNIFIED IDEOGRAPH-4E00 (一)
+    text = text.replace('Ｃ', 'C') # FULLWIDTH LATIN CAPITAL LETTER C -> LATIN CAPITAL LETTER C
+    text = text.replace('Ａ', 'A') # FULLWIDTH LATIN CAPITAL LETTER A -> LATIN CAPITAL LETTER A
+    text = text.replace('Ｂ', 'B') # FULLWIDTH LATIN CAPITAL LETTER B -> LATIN CAPITAL LETTER B
+    text = text.replace('Ｄ', 'D') # FULLWIDTH LATIN CAPITAL LETTER D -> LATIN CAPITAL LETTER D
+    text = text.replace('Ｅ', 'E') # FULLWIDTH LATIN CAPITAL LETTER E -> LATIN CAPITAL LETTER E
+    text = text.replace('Ｆ', 'F') # FULLWIDTH LATIN CAPITAL LETTER F -> LATIN CAPITAL LETTER F
+    # You might need to add more replacements if other characters cause issues.
+    return text
+
+
 # --- Streamlit 應用程式主體 ---
 def main():
     st.title("總學分查詢系統 🎓")
@@ -68,13 +93,12 @@ def main():
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
                     
-                    # --- 關鍵改動：移除 explicit_vertical_lines 並再次調整容忍度 ---
                     table_settings = {
-                        "horizontal_strategy": "lines",  # 保持水平線用於行
-                        "vertical_strategy": "lines",    # 保持垂直線用於列
-                        "snap_tolerance": 1,             # 進一步減少容忍度，以更精確對齊線條
-                        "text_tolerance": 1,             # 進一步減少文本容忍度
-                        "join_tolerance": 1,             # 進一步減少連接容忍度
+                        "horizontal_strategy": "lines",
+                        "vertical_strategy": "lines",
+                        "snap_tolerance": 1,
+                        "text_tolerance": 1,
+                        "join_tolerance": 1,
                         "min_words_horizontal": 1, 
                         "min_words_vertical": 1 
                     }
@@ -102,7 +126,8 @@ def main():
                         header_row_start_idx = -1 
 
                         for h_idx, h_row in enumerate(potential_header_rows):
-                            cleaned_h_row_list = [str(col).replace('\n', ' ').strip() if col is not None else "" for col in h_row]
+                            # Apply normalize_text here
+                            cleaned_h_row_list = [normalize_text(col) for col in h_row]
 
                             is_potential_header = True
                             for kw in ["學年度", "科目名稱", "學分", "GPA"]: 
@@ -111,7 +136,8 @@ def main():
                                     break
                             
                             if is_potential_header:
-                                header = cleaned_h_row_list
+                                # Apply normalize_text to the header found for consistent mapping
+                                header = [normalize_text(col) for col in h_row] # Use h_row here to get original values, then normalize
                                 header_row_found = True
                                 header_row_start_idx = h_idx 
                                 break 
@@ -150,7 +176,8 @@ def main():
                         current_row_data = None 
                         
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
-                            cleaned_row = [str(c).replace('\n', ' ').strip() if c is not None else "" for c in row]
+                            # Apply normalize_text here as well for data rows
+                            cleaned_row = [normalize_text(c) for c in row]
                             
                             debug_messages.append(f"    --- 處理原始數據行 {row_num_in_table + header_row_start_idx + 1} ---")
                             debug_messages.append(f"    原始數據行內容: {row}") 
