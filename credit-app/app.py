@@ -119,8 +119,11 @@ def main():
                         if not table or len(table) < 1: 
                             continue
 
-                        # 過濾掉表格開頭的完全空行
-                        filtered_table = [row for row in table if any(c.strip() for c in row)]
+                        # 過濾掉表格開頭的完全空行，並確保在 strip() 前轉換為字串
+                        filtered_table = [
+                            [str(cell).strip() for cell in row] # 對每個單元格先轉字串再 strip
+                            for row in table if any(str(cell).strip() for cell in row) # 過濾完全空行
+                        ]
                         if not filtered_table:
                             continue
                         
