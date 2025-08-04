@@ -79,7 +79,8 @@ def parse_credit_and_gpa(text):
         gpa = match_gpa_credit.group(1).upper()
         try:
             credit = float(match_gpa_credit.group(2))
-            if 0.0 < credit <= 5.0: # 學分不超過5的限制
+            # 移除學分上限判斷，只檢查學分是否大於0
+            if credit > 0.0: 
                 return credit, gpa
         except ValueError:
             pass
@@ -90,7 +91,8 @@ def parse_credit_and_gpa(text):
         try:
             credit = float(match_credit_gpa.group(1))
             gpa = match_credit_gpa.group(3).upper()
-            if 0.0 < credit <= 5.0: # 學分不超過5的限制
+            # 移除學分上限判斷，只檢查學分是否大於0
+            if credit > 0.0: 
                 return credit, gpa
         except ValueError:
             pass
@@ -100,7 +102,8 @@ def parse_credit_and_gpa(text):
     if credit_only_match:
         try:
             credit = float(credit_only_match.group(1))
-            if 0.0 < credit <= 5.0: # 學分不超過5的限制
+            # 移除學分上限判斷，只檢查學分是否大於0
+            if credit > 0.0: 
                 return credit, "" 
         except ValueError:
             pass
@@ -169,7 +172,8 @@ def is_grades_table(df):
         credit_gpa_like_cells = 0
         for item_str in sample_data:
             credit_val, gpa_val = parse_credit_and_gpa(item_str)
-            if (0.0 < credit_val <= 5.0) or \
+            # 判斷學分時不再設上限
+            if (credit_val > 0.0) or \
                (gpa_val and re.match(r'^[A-Fa-f][+\-]?$', gpa_val)) or \
                (item_str.lower() in ["通過", "抵免", "pass", "exempt"]):
                 credit_gpa_like_cells += 1
@@ -287,7 +291,7 @@ def calculate_total_credits(df_list):
             credit_vals_found = 0
             for item_str in sample_data:
                 credit_val, _ = parse_credit_and_gpa(item_str)
-                if 0.0 < credit_val <= 5.0: # Credits usually between 0.5 and 5
+                if credit_val > 0.0: # Credits usually positive
                     credit_vals_found += 1
             if credit_vals_found / total_sample_count >= 0.4:
                 potential_credit_cols.append(col_name)
@@ -372,10 +376,17 @@ def calculate_total_credits(df_list):
         if found_credit_column and found_subject_column and found_year_column and found_semester_column: # All 4 essential columns must be present
             try:
                 for row_idx, row in df.iterrows():
+                    # 偵錯輸出：顯示原始資料列
+                    st.info(f"--- 處理表格 {df_idx + 1}, 第 {row_idx + 1} 行 ---")
+                    st.info(f"原始資料列內容: {[normalize_text(str(cell)) for cell in row.tolist()]}")
+                    st.info(f"識別到的學年欄位: '{found_year_column}', 學期欄位: '{found_semester_column}'")
+                    st.info(f"識別到的科目欄位: '{found_subject_column}', 學分欄位: '{found_credit_column}', GPA欄位: '{found_gpa_column}'")
+
                     # Skip rows that appear to be empty or just administrative text
                     row_content = [normalize_text(str(cell)) for cell in row]
                     if all(cell == "" for cell in row_content) or \
                        any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell or "勞作" in cell for cell in row_content):
+                        st.info("該行被判斷為空行或行政性文字，已跳過。")
                         continue
 
                     extracted_credit = 0.0
@@ -399,8 +410,8 @@ def calculate_total_credits(df_list):
                         if parsed_credit_from_gpa_col > 0 and extracted_credit == 0.0:
                             extracted_credit = parsed_credit_from_gpa_col
                     
-                    # Final check for credit value to ensure it adheres to the max 5 credit rule
-                    if extracted_credit is None or extracted_credit > 5.0:
+                    # Final check for credit value to ensure it is positive
+                    if extracted_credit is None or extracted_credit <= 0.0: # 移除上限判斷
                         extracted_credit = 0.0
 
                     is_failing_grade = False
@@ -453,6 +464,7 @@ def calculate_total_credits(df_list):
 
                     # If it's still an empty course_name and doesn't have valid credit/GPA, skip this row
                     if not course_name and extracted_credit == 0.0 and not extracted_gpa and not is_passed_or_exempt_grade:
+                        st.info("該行沒有識別到科目名稱、有效學分或成績，已跳過。")
                         continue
                     
                     # If course_name is still empty, label it as "未知科目"
@@ -491,6 +503,9 @@ def calculate_total_credits(df_list):
                         sem_match = re.search(r'(上|下|春|夏|秋|冬|1|2|3|春季|夏季|秋季|冬季|spring|summer|fall|winter)', temp_second_col, re.IGNORECASE)
                         if sem_match:
                             semester = sem_match.group(1)
+                    
+                    # 偵錯輸出：顯示解析結果
+                    st.info(f"解析結果: 科目名稱='{course_name}', 學分='{extracted_credit}', GPA='{extracted_gpa}', 學年='{acad_year}', 學期='{semester}', 是否不及格='{is_failing_grade}'")
 
                     if is_failing_grade:
                         failed_courses.append({
@@ -650,6 +665,13 @@ def main():
             extracted_dfs = process_pdf_file(uploaded_file)
 
         if extracted_dfs:
+            st.markdown("---")
+            st.markdown("## ⚙️ 偵錯資訊 (Debug Info)")
+            st.info("以下是程式碼處理每行數據的詳細過程，幫助您理解學分計算和課程識別的狀況。")
+            st.info("您上傳的原始表格內容將會顯示，以及程式碼如何解析各個欄位。")
+            st.info("如果您發現有誤，請根據這些資訊告知我具體是哪個表格的哪一行、哪個欄位有問題。")
+            st.info("--- 偵錯訊息結束 ---")
+
             total_credits, calculated_courses, failed_courses = calculate_total_credits(extracted_dfs)
 
             st.markdown("---")
