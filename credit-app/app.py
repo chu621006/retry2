@@ -29,24 +29,26 @@ def process_pdf_file(uploaded_file):
 
     try:
         with pdfplumber.open(uploaded_file) as pdf:
-            st.write(f"正在處理檔案: {uploaded_file.name}")
+            st.write(f"正在處理檔案: **{uploaded_file.name}**")
             num_pages = len(pdf.pages)
-            st.info(f"PDF 總頁數: {num_pages}")
+            st.info(f"PDF 總頁數: **{num_pages}**")
 
             for page_num, page in enumerate(pdf.pages):
                 st.subheader(f"頁面 {page_num + 1}")
 
                 # 這裡你可以根據需要調整 table_settings
-                # 例如，如果表格有清晰的線條，可以使用 'lines' 策略
-                # 如果表格沒有線條但文本排列整齊，可以嘗試 'text' 策略
+                # 對於成績單這類有清晰線條的表格，'lines' 策略通常效果不錯。
+                # 如果仍有問題，可以嘗試調整容忍度或將策略改為 'text'。
                 table_settings = {
                     "vertical_strategy": "lines",
                     "horizontal_strategy": "lines",
-                    "snap_tolerance": 3,
-                    "join_tolerance": 3,
-                    "edge_min_length": 3,
-                    "text_tolerance": 1,
-                    # "text_strategy": "lines", # 根據實際情況可以嘗試 'lines' 或 'words'
+                    "snap_tolerance": 3,           # 調整線條捕捉的容忍度
+                    "join_tolerance": 3,           # 調整合併線條的容忍度
+                    "edge_min_length": 3,          # 最小邊緣長度，避免偵測到過短的線條
+                    "text_tolerance": 1,           # 文本接近線條的容忍度
+                    # 如果表格線條不明顯，可以嘗試：
+                    # "vertical_strategy": "text",
+                    # "horizontal_strategy": "text",
                 }
 
                 try:
@@ -54,7 +56,7 @@ def process_pdf_file(uploaded_file):
                     tables = page.extract_tables(table_settings)
 
                     if not tables:
-                        st.warning(f"頁面 {page_num + 1} 未偵測到表格。")
+                        st.warning(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
                         continue
 
                     for table_idx, table in enumerate(tables):
@@ -68,24 +70,26 @@ def process_pdf_file(uploaded_file):
                         
                         # 將處理後的表格轉換為 DataFrame
                         if processed_table and len(processed_table) > 1:
+                            # 假設第一行是標題
                             df_table = pd.DataFrame(processed_table[1:], columns=processed_table[0])
                             all_grades_data.append(df_table)
                             st.dataframe(df_table)
                         elif processed_table:
+                             # 如果只有一行或沒有明確標題，直接作為數據
                              df_table = pd.DataFrame(processed_table)
                              all_grades_data.append(df_table)
                              st.dataframe(df_table)
                         else:
-                            st.info(f"表格 {table_idx + 1} 提取後為空。")
+                            st.info(f"表格 **{table_idx + 1}** 提取後為空。")
 
                 except Exception as e_table:
-                    st.error(f"頁面 {page_num + 1} 處理表格時發生錯誤: {e_table}")
+                    st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
                     st.warning("這可能是由於 PDF 格式複雜或表格提取設定不適用。")
 
     except pdfplumber.PDFSyntaxError as e_pdf_syntax:
-        st.error(f"處理 PDF 語法時發生錯誤: {e_pdf_syntax}。檔案可能已損壞或格式不正確。")
+        st.error(f"處理 PDF 語法時發生錯誤: `{e_pdf_syntax}`。檔案可能已損壞或格式不正確。")
     except Exception as e:
-        st.error(f"處理 PDF 檔案時發生一般錯誤: {e}")
+        st.error(f"處理 PDF 檔案時發生一般錯誤: `{e}`")
         st.error("請確認您的 PDF 格式是否為清晰的表格。若問題持續，可能是 PDF 結構較為複雜，需要調整 `pdfplumber` 的表格提取設定。")
 
     return all_grades_data
@@ -100,7 +104,7 @@ def main():
     uploaded_file = st.file_uploader("選擇一個 PDF 檔案", type="pdf")
 
     if uploaded_file is not None:
-        st.success(f"已上傳檔案: {uploaded_file.name}")
+        st.success(f"已上傳檔案: **{uploaded_file.name}**")
         st.spinner("正在處理 PDF，請稍候...")
         
         # 處理 PDF 檔案
@@ -108,10 +112,10 @@ def main():
 
         if extracted_dfs:
             st.success("成功提取所有表格數據！")
-            st.write("以下是所有提取到的表格數據（每個表格作為一個 DataFrame）：")
+            st.write("以下是所有提取到的表格數據 (每個表格作為一個 DataFrame)：")
             
             # 你可以選擇如何合併或顯示這些 DataFrame
-            # 例如，將它們合併成一個大的 DataFrame（如果結構相容）
+            # 例如，將它們合併成一個大的 DataFrame (如果結構相容)
             try:
                 combined_df = pd.concat(extracted_dfs, ignore_index=True)
                 st.subheader("所有表格合併後的數據 (若結構相容)")
@@ -126,7 +130,7 @@ def main():
                     mime="text/csv",
                 )
             except Exception as e_concat:
-                st.warning(f"無法將所有提取的表格合併：{e_concat}。可能因為表格結構不一致。")
+                st.warning(f"無法將所有提取的表格合併：`{e_concat}`。可能因為表格結構不一致。")
                 st.info("每個單獨的表格已在上方獨立顯示。")
         else:
             st.warning("未從 PDF 中提取到任何表格數據。請檢查 PDF 內容或嘗試調整 `table_settings`。")
