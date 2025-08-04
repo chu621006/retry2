@@ -102,9 +102,7 @@ def main():
                     debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
 
                     # 這裡可以根據實際情況調整裁剪範圍，以確保表頭和表格數據都被包含
-                    # 因為成績表格的表頭似乎在頁面較高處，但又不是頂部
-                    # 可以嘗試稍微增加 top_y_crop 或調整 bottom_y_crop
-                    top_y_crop = 60 # 保持原樣，因為它已經能捕捉到頁面1的表頭
+                    top_y_crop = 60 
                     bottom_y_crop = page.height 
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
@@ -124,7 +122,6 @@ def main():
                     
                     debug_messages.append(f"頁面 {page_num + 1} 提取到 {len(tables)} 個表格。")
                     
-                    # 嘗試處理所有提取到的表格，而不僅僅是第一個
                     if not tables:
                         debug_messages.append(f"頁面 {page_num + 1} 未提取到任何表格。")
                         continue
@@ -133,34 +130,34 @@ def main():
                         debug_messages.append(f"--- 處理頁面 {page_num + 1} 的表格 {table_idx + 1} ---")
                         debug_messages.append(f"  原始提取的表格 (前5行): {table[:5]}") 
 
-                        if not table or len(table) < 2: 
+                        if not table or len(table) < 1: # 至少有一行
                             debug_messages.append(f"  表格 {table_idx + 1} 無效 (行數不足或為空)。")
                             continue
 
-                        # 過濾掉表格開頭的完全空行，它們可能會干擾表頭識別
+                        # 過濾掉表格開頭的完全空行
                         filtered_table = [row for row in table if any(c.strip() for c in row)]
                         if not filtered_table:
                             debug_messages.append(f"  過濾空行後表格 {table_idx + 1} 為空，跳過。")
                             continue
                         
-                        potential_header_search_range = min(len(filtered_table), 5) # 依然在前5行中搜索
                         header_row_found = False
                         header = []
-                        header_row_start_idx = -1 
+                        header_row_start_idx = -1 # 初始化為-1，表示數據從第0行開始
 
+                        # 首先嘗試在過濾後的表格前5行尋找明確的表頭
+                        potential_header_search_range = min(len(filtered_table), 5) 
                         for h_idx in range(potential_header_search_range):
                             h_row = filtered_table[h_idx]
                             cleaned_h_row_list = [normalize_text(col) for col in h_row]
 
                             is_potential_header = True
-                            # 關鍵字必須都包含，並且確保有足夠的列
                             if len(cleaned_h_row_list) >= len(expected_columns_order):
                                 for kw in ["學年度", "科目名稱", "學分", "GPA"]: 
                                     if not any(kw in cell for cell in cleaned_h_row_list):
                                         is_potential_header = False
                                         break
                             else:
-                                is_potential_header = False # 列數不足，肯定不是完整表頭
+                                is_potential_header = False 
                             
                             if is_potential_header:
                                 header = [normalize_text(col) for col in h_row] 
@@ -169,16 +166,32 @@ def main():
                                 break 
                         
                         if not header_row_found:
-                            debug_messages.append(f"  未能識別出有效的表頭，跳過此表格。")
-                            continue
-                        
-                        debug_messages.append(f"  識別到的表頭: {header}")
+                            debug_messages.append(f"  未能識別出明確的表頭。嘗試檢查是否為數據延續。")
+                            # 如果沒有找到明確的表頭，檢查第一條非空行是否像數據行
+                            if len(filtered_table[0]) >= len(expected_columns_order): # 確保行足夠長
+                                first_data_candidate_row = [normalize_text(col) for col in filtered_table[0]]
+                                # 檢查第一列是否為3位數字的學年度，且第三列（選課代號）非空
+                                if first_data_candidate_row[0].isdigit() and \
+                                   len(first_data_candidate_row[0]) == 3 and \
+                                   first_data_candidate_row[2].strip() != '': # 假設選課代號在第3列（索引2）
+                                    
+                                    debug_messages.append(f"  第一行 '{first_data_candidate_row[0]}' 像學年度，判斷為數據延續。")
+                                    header = expected_columns_order # 假設列順序與預期一致
+                                    header_row_start_idx = -1 # 表示數據從 filtered_table[0] 開始
+                                else:
+                                    debug_messages.append(f"  第一行不符合數據行格式，跳過此表格。")
+                                    continue
+                            else:
+                                debug_messages.append(f"  第一行太短不符合數據行格式，跳過此表格。")
+                                continue
+
+
+                        debug_messages.append(f"  最終表頭: {header}")
 
                         col_to_index = {} 
                         index_to_col = {} 
 
                         for i, h_ext in enumerate(header):
-                            # 使用更精確的匹配來映射列名
                             if "學年度" in h_ext: col_to_index["學年度"] = i; index_to_col[i] = "學年度"
                             elif "學期" in h_ext: col_to_index["學期"] = i; index_to_col[i] = "學期"
                             elif "選課代號" in h_ext: col_to_index["選課代號"] = i; index_to_col[i] = "選課代號"
@@ -203,16 +216,22 @@ def main():
                         processed_rows = []
                         current_row_data_temp = None 
                         
-                        # 從識別到的表頭下一行開始處理數據
-                        for row_num_in_table, row in enumerate(filtered_table[header_row_start_idx + 1:]): 
+                        # 確定從 filtered_table 的哪一行開始處理數據
+                        if header_row_start_idx == -1: # 如果是隱式表頭，從第一行開始
+                            data_rows_to_process = filtered_table[:]
+                        else: # 如果找到了明確表頭，從表頭下一行開始
+                            data_rows_to_process = filtered_table[header_row_start_idx + 1:]
+
+                        for row_num_in_table, row in enumerate(data_rows_to_process): 
                             cleaned_row = [normalize_text(c) for c in row]
                             
                             # 確保行足夠長，避免索引越界
-                            if len(cleaned_row) < max(學年度_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
+                            # 這裡使用 max(索引) + 1，確保能訪問所有需要的列
+                            if len(cleaned_row) < max(學年度_idx, 學期_idx, 選課代號_idx, 科目名稱_idx, 學分_idx, GPA_idx) + 1:
                                 debug_messages.append(f"    原始行太短，跳過: {cleaned_row}")
                                 continue
 
-                            debug_messages.append(f"    --- 處理原始數據行 {row_num_in_table + header_row_start_idx + 1} ---")
+                            debug_messages.append(f"    --- 處理原始數據行 (Data Rows) {row_num_in_table} ---")
                             debug_messages.append(f"    原始數據行內容: {row}") 
                             debug_messages.append(f"    清洗後數據行內容: {cleaned_row}") 
 
@@ -221,7 +240,7 @@ def main():
                             選課代號_val = cleaned_row[選課代號_idx]
                             科目名稱_val = cleaned_row[科目名稱_idx]
 
-                            # 更嚴格的新行判斷：學年度必須是3位數字，選課代號不能為空
+                            # 新行判斷：學年度必須是3位數字，選課代號不能為空
                             if 學年度_val.isdigit() and len(學年度_val) == 3 and 選課代號_val.strip() != '':
                                 is_new_grade_row = True
                                 debug_messages.append(f"      判斷: 滿足新的成績行條件 (學年度='{學年度_val}', 選課代號='{選課代號_val}')")
