@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import pdfplumber
+import collections # 用於計數重複元素
 
 # --- 輔助函數 ---
 def normalize_text(cell_content):
@@ -20,6 +21,30 @@ def normalize_text(cell_content):
     else:
         # 對於其他未知類型，嘗試轉換為字串並去除空白
         return str(cell_content).strip()
+
+def make_unique_columns(columns_list):
+    """
+    將列表中的欄位名稱轉換為唯一的名稱，處理重複和空字串。
+    如果遇到重複或空字串，會添加後綴 (例如 'Column_1', '欄位_2')。
+    """
+    seen = collections.defaultdict(int)
+    unique_columns = []
+    for col in columns_list:
+        original_col = col if col else f"Column_{len(unique_columns) + 1}" # 為空字串提供一個初始名稱
+        
+        # 移除可能導致重複的特殊字元或空白 (如果需要更激進的清理)
+        # cleaned_col = "".join(filter(str.isalnum, original_col)) # 只保留字母數字，可選
+
+        name = original_col
+        if seen[name] > 0:
+            name = f"{original_col}_{seen[original_col]}"
+        while name in unique_columns: # 再次檢查確保徹底唯一 (避免 name_1_1 的情況)
+             seen[original_col] += 1
+             name = f"{original_col}_{seen[original_col]}"
+        
+        unique_columns.append(name)
+        seen[original_col] += 1 # 更新計數
+    return unique_columns
 
 def process_pdf_file(uploaded_file):
     """
@@ -68,19 +93,45 @@ def process_pdf_file(uploaded_file):
                             normalized_row = [normalize_text(cell) for cell in row]
                             processed_table.append(normalized_row)
                         
-                        # 將處理後的表格轉換為 DataFrame
-                        if processed_table and len(processed_table) > 1:
-                            # 假設第一行是標題
-                            df_table = pd.DataFrame(processed_table[1:], columns=processed_table[0])
-                            all_grades_data.append(df_table)
-                            st.dataframe(df_table)
-                        elif processed_table:
-                             # 如果只有一行或沒有明確標題，直接作為數據
-                             df_table = pd.DataFrame(processed_table)
-                             all_grades_data.append(df_table)
-                             st.dataframe(df_table)
-                        else:
+                        # DEBUG: 顯示原始處理後的表格內容，幫助理解問題
+                        # st.json(processed_table) 
+                        
+                        if not processed_table:
                             st.info(f"表格 **{table_idx + 1}** 提取後為空。")
+                            continue
+
+                        # 處理欄位名稱
+                        header_row = processed_table[0]
+                        data_rows = processed_table[1:]
+
+                        # 使用 make_unique_columns 確保欄位名稱唯一
+                        unique_columns = make_unique_columns(header_row)
+
+                        if data_rows:
+                            # 確保數據行的列數與欄位名稱的列數匹配
+                            # 如果不匹配，需要調整數據或欄位名稱的長度
+                            # 這裡選擇截斷或填充最短的那個，以避免錯誤
+                            num_columns_header = len(unique_columns)
+                            # 統一所有行的長度為標題行的長度
+                            cleaned_data_rows = []
+                            for row in data_rows:
+                                if len(row) > num_columns_header:
+                                    cleaned_data_rows.append(row[:num_columns_header])
+                                elif len(row) < num_columns_header:
+                                    cleaned_data_rows.append(row + [''] * (num_columns_header - len(row)))
+                                else:
+                                    cleaned_data_rows.append(row)
+
+                            try:
+                                df_table = pd.DataFrame(cleaned_data_rows, columns=unique_columns)
+                                all_grades_data.append(df_table)
+                                st.dataframe(df_table)
+                            except Exception as e_df:
+                                st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 轉換為 DataFrame 時發生錯誤: `{e_df}`")
+                                st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
+                                st.error(f"生成的唯一欄位名稱: {unique_columns}")
+                        else:
+                            st.info(f"表格 **{table_idx + 1}** 沒有數據行。")
 
                 except Exception as e_table:
                     st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
@@ -105,10 +156,9 @@ def main():
 
     if uploaded_file is not None:
         st.success(f"已上傳檔案: **{uploaded_file.name}**")
-        st.spinner("正在處理 PDF，請稍候...")
-        
-        # 處理 PDF 檔案
-        extracted_dfs = process_pdf_file(uploaded_file)
+        with st.spinner("正在處理 PDF，請稍候..."): # 使用 with st.spinner 確保顯示正確
+            # 處理 PDF 檔案
+            extracted_dfs = process_pdf_file(uploaded_file)
 
         if extracted_dfs:
             st.success("成功提取所有表格數據！")
@@ -117,6 +167,8 @@ def main():
             # 你可以選擇如何合併或顯示這些 DataFrame
             # 例如，將它們合併成一個大的 DataFrame (如果結構相容)
             try:
+                # 嘗試將所有 DataFrame 合併，如果欄位名稱不一致，會導致 NaN
+                # 這裡不再強制要求 Reindexing valid，因為我們已經處理了單個 DataFrame 的欄位唯一性
                 combined_df = pd.concat(extracted_dfs, ignore_index=True)
                 st.subheader("所有表格合併後的數據 (若結構相容)")
                 st.dataframe(combined_df)
@@ -130,8 +182,8 @@ def main():
                     mime="text/csv",
                 )
             except Exception as e_concat:
-                st.warning(f"無法將所有提取的表格合併：`{e_concat}`。可能因為表格結構不一致。")
-                st.info("每個單獨的表格已在上方獨立顯示。")
+                st.warning(f"無法將所有提取的表格合併：`{e_concat}`。這通常是因為不同表格的欄位結構或數量不一致。")
+                st.info("每個單獨的表格已在上方獨立顯示，您可以查看單獨的表格結果。")
         else:
             st.warning("未從 PDF 中提取到任何表格數據。請檢查 PDF 內容或嘗試調整 `table_settings`。")
     else:
