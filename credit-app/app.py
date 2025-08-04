@@ -19,7 +19,7 @@ def parse_gpa_to_numeric(gpa_str):
         '抵免': 999.0,
         '通過': 999.0
     }
-    return gpa_map.get(str(gpa_str).strip(), 0.0) # 確保轉換為字串再strip
+    return gpa_map.get(str(gpa_str).strip(), 0.0)
 
 # --- 2. 成績分析函數 ---
 def analyze_student_grades(df):
@@ -56,14 +56,6 @@ def main():
 
             with pdfplumber.open(io.BytesIO(uploaded_file.getvalue())) as pdf:
                 for page in pdf.pages:
-                    # 嘗試使用更精確的表格提取設置
-                    # 這些參數需要根據實際PDF的表格結構來微調
-                    # 您可以使用 pdfplumber 的命令行工具或 jupyter notebook 進行視覺化調試
-                    # 例如：`pdfplumber -d your_file.pdf`
-                    # 或者調整 'bbox' 參數來框定表格區域 (left, top, right, bottom)
-                    # 從您的 PDF 看來，主要成績表格的列是相對固定的。
-                    # 嘗試明確定義垂直線的位置，因為科目名稱可能有多行
-                    
                     # 這裡根據邱旭廷成績總表.pdf 進行調整
                     # 我在本地使用 pdfplumber 進行了初步測試，這些線條位置似乎對齊得比較好。
                     # 您可能需要根據實際情況進行微調。
@@ -74,11 +66,7 @@ def main():
                     ]
                     
                     # 嘗試只提取表格部分，避免頁面頂部和底部的非表格文字
-                    # 頁面1和頁面2的表格開始和結束位置可能不同，但我們假設大部分成績在一個區域
-                    # 這裡給出一個通用範圍，可能需要調整
-                    # crop_box = (left, top, right, bottom)
-                    # 頁面1和2的表格內容大致在 y=180 到 y=750 之間
-                    
+                    # 頁面1和頁面2的表格內容大致在 y=180 到 y=750 之間
                     cropped_page = page.crop((0, 180, page.width, page.height - 50)) # 裁切掉頁面頂部和底部的一些非表格內容
 
                     table_settings = {
@@ -86,7 +74,7 @@ def main():
                         "horizontal_strategy": "lines", # 依賴水平線來區分行
                         "explicit_vertical_lines": explicit_vertical_lines,
                         "snap_tolerance": 5, # 增加對齊容忍度
-                        "keep_blank_chars": True # 保留空白字元，有助於保持文字間距
+                        # "keep_blank_chars": True # 移除此行，因為它可能不被當前pdfplumber版本支持
                     }
                     
                     tables = cropped_page.extract_tables(table_settings)
@@ -136,12 +124,15 @@ def main():
                                 current_row_data = list(cleaned_row) # 開始新行
                             elif current_row_data and len(cleaned_row) >= len(current_row_data) and cleaned_row[0] == '':
                                 # 如果是續行（第一列為空，通常是科目名稱的續行）
-                                # 假設科目名稱在第四列（索引3）
+                                # 假設科目名稱在第四列（索引3），並且該列不是空的
                                 if len(cleaned_row) > 3 and cleaned_row[3] != '': # 確保有科目名稱內容
-                                    current_row_data[3] += " " + cleaned_row[3] # 合併到科目名稱
-                                    # 如果有其他列的內容，也考慮合併（例如，有時GPA會換行）
-                                    # 這裡假設只有科目名稱換行，其他列不換行
-                                    # 如果其他列也有數據，需要更複雜的判斷和合併邏輯
+                                    # 尋找 '科目名稱' 的索引，以便動態合併
+                                    try:
+                                        subject_name_idx = expected_columns_order.index("科目名稱")
+                                        if subject_name_idx < len(current_row_data): # 確保索引在範圍內
+                                            current_row_data[subject_name_idx] += " " + cleaned_row[subject_name_idx] # 合併到科目名稱
+                                    except ValueError:
+                                        pass # 如果沒有科目名稱列，則不處理
                                 else: # 可能是完全空白的行，或者其他不屬於成績的行
                                     if current_row_data: # 如果有前一行數據，確保它被保存
                                         processed_rows.append(current_row_data)
@@ -165,7 +156,7 @@ def main():
                                     df_table[col_name] = pd.NA
                             
                             # 只保留預期列，並按正確順序排列
-                            df_table = df_table[expected_columns_order].copy() # 使用 .copy() 避免 SettingWithCopyWarning
+                            df_table = df_table[expected_columns_order].copy()
                             
                             # 最終清理數據
                             for col in df_table.columns:
@@ -183,7 +174,6 @@ def main():
             full_grades_df.dropna(how='all', inplace=True) # 移除所有列都是 NaN 的行
 
             # 過濾掉那些明顯不是成績行的資料
-            # 確保 '學年度' 是數字且篩選非成績行
             full_grades_df = full_grades_df[
                 full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$') # 確保學年度是三位數
             ]
