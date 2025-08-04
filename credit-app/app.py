@@ -12,6 +12,18 @@ year_column_keywords = ["學年", "year", "學 年"]
 semester_column_keywords = ["學期", "semester", "學 期"]
 failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"]
 
+# 將所有標頭關鍵字扁平化為一個列表，用於更廣泛的標頭行判斷
+# 使用 set 以提高查詢效率，並確保唯一性
+all_header_keywords_flat_lower = set([
+    k.lower() for k in 
+    credit_column_keywords + 
+    subject_column_keywords + 
+    gpa_column_keywords + 
+    year_column_keywords + 
+    semester_column_keywords
+])
+
+
 # --- 輔助函數 ---
 def normalize_text(cell_content):
     """
@@ -362,16 +374,30 @@ def calculate_total_credits(df_list):
                     st.info(f"識別到的學年欄位: '{found_year_column}' (內容: {row.get(found_year_column, '') if found_year_column else 'N/A'}), 學期欄位: '{found_semester_column}' (內容: {row.get(found_semester_column, '') if found_semester_column else 'N/A'})")
                     st.info(f"識別到的科目欄位: '{found_subject_column}' (內容: {row.get(found_subject_column, '') if found_subject_column else 'N/A'}), 學分欄位: '{found_credit_column}' (內容: {row.get(found_credit_column, '') if found_credit_column else 'N/A'}), GPA欄位: '{found_gpa_column}' (內容: {row.get(found_gpa_column, '') if found_gpa_column else 'N/A'})")
 
-
-                    # Skip rows that appear to be empty or just administrative text
-                    row_content = [normalize_text(str(cell)) for cell in row]
-                    if all(cell == "" for cell in row_content) or \
-                       any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell or "勞作" in cell for cell in row_content):
-                        st.info("該行被判斷為空行或行政性文字，已跳過。")
-                        continue
-
                     extracted_credit = 0.0
                     extracted_gpa = ""
+
+                    # --- 新增的標頭行內容判斷邏輯 ---
+                    row_content = [normalize_text(str(cell)) for cell in row]
+                    is_header_row_content = False
+                    header_keyword_matches = 0
+                    for cell_val in row_content:
+                        normalized_cell_val = normalize_text(cell_val).lower()
+                        # 檢查單元格內容是否精確匹配任何一個已知的標頭關鍵字
+                        if normalized_cell_val in all_header_keywords_flat_lower:
+                            header_keyword_matches += 1
+                    
+                    # 如果一行中匹配到的標頭關鍵字達到一定數量，就判斷為標頭行
+                    # 這個閾值可以根據實際的成績單格式調整，3-4 個通常是一個不錯的起點
+                    if header_keyword_matches >= 3: 
+                        is_header_row_content = True
+
+                    # Skip rows that appear to be empty, header-like or just administrative text
+                    if all(cell == "" for cell in row_content) or \
+                       is_header_row_content or \
+                       any("體育室" in cell or "本表僅供查詢" in cell or "學號" in cell or "勞作" in cell for cell in row_content):
+                        st.info("該行被判斷為空行、標頭行或行政性文字，已跳過。")
+                        continue
 
                     # Extract from credit column first, it might contain both
                     if found_credit_column in row and pd.notna(row[found_credit_column]):
@@ -674,7 +700,7 @@ def main():
             st.info("以下是程式碼處理每行數據的詳細過程，幫助您理解學分計算和課程識別的狀況。")
             st.info("您上傳的原始表格內容將會顯示，以及程式碼如何解析各個欄位。")
             st.info("如果您發現有誤，請根據這些資訊告知我具體是哪個表格的哪一行、哪個欄位有問題。")
-            st.info("--- 偵錯訊息結束 ---")
+            st.info("--- 偵錯訊息結束 ---") # 添加這行以明確區分偵錯輸出
 
             total_credits, calculated_courses, failed_courses = calculate_total_credits(extracted_dfs)
 
