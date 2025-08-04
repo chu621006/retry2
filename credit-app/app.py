@@ -4,6 +4,14 @@ import pdfplumber
 import collections
 import re
 
+# --- 全域定義的關鍵字列表 ---
+credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits", "Credit", "學分數(學分)", "總學分"]
+subject_column_keywords = ["科目名稱", "課程名稱", "Course Name", "Subject Name", "科目", "課程"]
+gpa_column_keywords = ["GPA", "成績", "Grade", "gpa(數值)"]
+year_column_keywords = ["學年", "year", "學 年"]
+semester_column_keywords = ["學期", "semester", "學 期"]
+failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"]
+
 # --- 輔助函數 ---
 def normalize_text(cell_content):
     """
@@ -123,18 +131,12 @@ def is_grades_table(df):
     # 使用 make_unique_columns 處理潛在的重複和空欄位名稱 (already done before calling this)
     normalized_columns = {re.sub(r'\s+', '', col).lower(): col for col in df.columns.tolist()}
     
-    credit_keywords = ["學分", "credits", "credit", "學分數"]
-    gpa_keywords = ["gpa", "成績", "grade", "gpa(數值)"]
-    subject_keywords = ["科目名稱", "課程名稱", "coursename", "subjectname", "科目", "課程"]
-    year_keywords = ["學年", "year"]
-    semester_keywords = ["學期", "semester"]
-
     # Check for direct header matches first
-    has_credit_col_header = any(any(k in norm_col for k in credit_keywords) for norm_col in normalized_columns.keys())
-    has_gpa_col_header = any(any(k in norm_col for k in gpa_keywords) for norm_col in normalized_columns.keys())
-    has_subject_col_header = any(any(k in norm_col for k in subject_keywords) for norm_col in normalized_columns.keys())
-    has_year_col_header = any(any(k in norm_col for k in year_keywords) for norm_col in normalized_columns.keys())
-    has_semester_col_header = any(any(k in norm_col for k in semester_keywords) for norm_col in normalized_columns.keys())
+    has_credit_col_header = any(any(k in norm_col for k in credit_column_keywords) for norm_col in normalized_columns.keys())
+    has_gpa_col_header = any(any(k in norm_col for k in gpa_column_keywords) for norm_col in normalized_columns.keys())
+    has_subject_col_header = any(any(k in norm_col for k in subject_column_keywords) for norm_col in normalized_columns.keys())
+    has_year_col_header = any(any(k in norm_col for k in year_column_keywords) for norm_col in normalized_columns.keys())
+    has_semester_col_header = any(any(k in norm_col for k in semester_column_keywords) for norm_col in normalized_columns.keys())
 
     # If all header keywords are present, it's a strong indicator
     if has_subject_col_header and (has_credit_col_header or has_gpa_col_header) and has_year_col_header and has_semester_col_header:
@@ -206,14 +208,6 @@ def calculate_total_credits(df_list):
     total_credits = 0.0
     calculated_courses = [] 
     failed_courses = [] 
-
-    credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits", "Credit", "學分數(學分)", "總學分"]
-    subject_column_keywords = ["科目名稱", "課程名稱", "Course Name", "Subject Name", "科目", "課程"]
-    gpa_column_keywords = ["GPA", "成績", "Grade", "gpa(數值)"]
-    year_column_keywords = ["學年", "year", "學 年"]
-    semester_column_keywords = ["學期", "semester", "學 期"]
-    
-    failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"]
 
     for df_idx, df in enumerate(df_list):
         if df.empty or len(df.columns) < 3: # Skip empty or too small dataframes
