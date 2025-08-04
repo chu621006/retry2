@@ -37,8 +37,10 @@ def make_unique_columns(columns_list):
     for col in columns_list:
         original_col_cleaned = normalize_text(col)
         
+        # 對於空字串或過短的字串，使用 'Column_X' 格式
         if not original_col_cleaned or len(original_col_cleaned) < 2: 
             name_base = "Column"
+            # 確保生成的 Column_X 是在 unique_columns 中唯一的
             current_idx = 1
             while f"{name_base}_{current_idx}" in unique_columns:
                 current_idx += 1
@@ -46,14 +48,16 @@ def make_unique_columns(columns_list):
         else:
             name = original_col_cleaned
         
+        # 處理名稱本身的重複
         final_name = name
         counter = seen[name]
+        # 如果當前生成的名稱已經存在於 unique_columns 中，則添加後綴
         while final_name in unique_columns:
             counter += 1
-            final_name = f"{name}_{counter}" if counter > 0 else name
+            final_name = f"{name}_{counter}" 
         
         unique_columns.append(final_name)
-        seen[name] = counter
+        seen[name] = counter # 更新該基礎名稱的最大計數
 
     return unique_columns
 
@@ -255,31 +259,3 @@ def calculate_total_credits(df_list):
 
                     course_name = "未知科目" 
                     if found_subject_column and found_subject_column in row:
-                        temp_name = normalize_text(row[found_subject_column])
-                        if len(temp_name) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name): # 確保是有效的中文科目名
-                            course_name = temp_name
-                        elif not temp_name and found_gpa_column: # 如果科目名稱欄位是空的，但有GPA，嘗試從前一列獲取（常見於合併單元格）
-                            try:
-                                prev_col_idx = df.columns.get_loc(found_subject_column) - 1
-                                if prev_col_idx >= 0:
-                                    temp_name_prev_col = normalize_text(row[df.columns[prev_col_idx]])
-                                    if len(temp_name_prev_col) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col):
-                                        course_name = temp_name_prev_col
-                            except Exception:
-                                pass
-
-                    # 嘗試獲取學年度和學期
-                    acad_year = ""
-                    semester = ""
-                    # 這些通常在表格的前兩列
-                    if len(df.columns) > 0:
-                        acad_year = normalize_text(row[df.columns[0]])
-                    if len(df.columns) > 1:
-                        semester = normalize_text(row[df.columns[1]])
-
-
-                    if extracted_credit > 0 or (extracted_credit == 0 and is_failing_grade): # 處理有學分但不及格的科目，或者學分為0的通過/抵免科目
-                        if is_failing_grade:
-                            failed_courses.append({
-                                "學年度": acad_year,
-                                "學
