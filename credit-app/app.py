@@ -163,7 +163,7 @@ def is_grades_table(df):
 
         # 判斷潛在科目名稱欄位: 包含中文字符，長度通常較長 (>4個字), 且不全是數字或單個字母成績/通過/抵免
         subject_like_cells = sum(1 for item_str in sample_data 
-                                 if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) > 4 
+                                 if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) >= 2 # 修改此處，放寬到>=2個字
                                  and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str)
                                  and not item_str.lower() in ["通過", "抵免", "pass", "exempt"])
         if subject_like_cells / total_sample_count >= 0.4: # 放寬條件，只要40%像科目名稱
@@ -278,7 +278,8 @@ def calculate_total_credits(df_list):
             # 判斷潛在科目名稱欄位
             subject_vals_found = 0
             for item_str in sample_data:
-                if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) > 4 and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str) and not item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
+                # 修改此處，放寬到 >= 2 個字，並確保包含中文字符且不是純數字或成績
+                if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) >= 2 and not item_str.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', item_str) and not item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
                     subject_vals_found += 1
             if subject_vals_found / total_sample_count >= 0.4: # 放寬至0.4
                 potential_subject_cols.append(col_name)
@@ -417,7 +418,8 @@ def calculate_total_credits(df_list):
                     course_name = "未知科目" 
                     if found_subject_column in row and pd.notna(row[found_subject_column]): 
                         temp_name = normalize_text(row[found_subject_column])
-                        if len(temp_name) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name): 
+                        # 修改此處：科目名稱長度判斷，放寬為 >= 2 個字
+                        if len(temp_name) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name): 
                             course_name = temp_name
                         elif not temp_name: 
                             # If subject column is empty, try to infer from adjacent columns if they contain text that looks like a course name
@@ -428,7 +430,8 @@ def calculate_total_credits(df_list):
                                     prev_col_name = df.columns[current_col_idx - 1]
                                     if prev_col_name in row and pd.notna(row[prev_col_name]):
                                         temp_name_prev_col = normalize_text(row[prev_col_name])
-                                        if len(temp_name_prev_col) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col) and \
+                                        # 修改此處：相鄰欄位科目名稱長度判斷，放寬為 >= 2 個字
+                                        if len(temp_name_prev_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_prev_col) and \
                                             not temp_name_prev_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_prev_col):
                                             course_name = temp_name_prev_col
                                             
@@ -437,7 +440,8 @@ def calculate_total_credits(df_list):
                                     next_col_name = df.columns[current_col_idx + 1]
                                     if next_col_name in row and pd.notna(row[next_col_name]):
                                         temp_name_next_col = normalize_text(row[next_col_name])
-                                        if len(temp_name_next_col) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_next_col) and \
+                                        # 修改此處：相鄰欄位科目名稱長度判斷，放寬為 >= 2 個字
+                                        if len(temp_name_next_col) >= 2 and re.search(r'[\u4e00-\u9fa5]', temp_name_next_col) and \
                                             not temp_name_next_col.isdigit() and not re.match(r'^[A-Fa-f][+\-]?$', temp_name_next_col):
                                             course_name = temp_name_next_col
                             except Exception:
