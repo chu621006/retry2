@@ -32,9 +32,6 @@ def make_unique_columns(columns_list):
     for col in columns_list:
         original_col = col if col else f"Column_{len(unique_columns) + 1}" # 為空字串提供一個初始名稱
         
-        # 移除可能導致重複的特殊字元或空白 (如果需要更激進的清理)
-        # cleaned_col = "".join(filter(str.isalnum, original_col)) # 只保留字母數字，可選
-
         name = original_col
         if seen[name] > 0:
             name = f"{original_col}_{seen[original_col]}"
@@ -45,6 +42,52 @@ def make_unique_columns(columns_list):
         unique_columns.append(name)
         seen[original_col] += 1 # 更新計數
     return unique_columns
+
+def calculate_total_credits(df_list):
+    """
+    從提取的 DataFrames 列表中計算總學分。
+    尋找包含 '學分' 或 '學分(GPA)' 類似字樣的欄位進行加總。
+    """
+    total_credits = 0.0
+    processed_dfs_for_credits = [] # 儲存實際用於計算學分的 DataFrame 片段
+
+    st.subheader("學分計算分析")
+
+    # 定義可能的學分欄位名稱 (大小寫不敏感，並去除空格)
+    credit_column_keywords = ["學分", "學分數"]
+
+    for df_idx, df in enumerate(df_list):
+        found_credit_column = None
+        # 尋找學分欄位，考慮各種變體和標題處理後可能產生的名稱
+        for col in df.columns:
+            # 將欄位名標準化進行匹配
+            cleaned_col = col.replace(" ", "").replace("(GPA)", "").strip()
+            if any(keyword in cleaned_col for keyword in credit_column_keywords):
+                found_credit_column = col
+                break
+        
+        if found_credit_column:
+            st.info(f"從表格 {df_idx + 1} (欄位: '{found_credit_column}') 偵測到學分數據。")
+            try:
+                # 嘗試將學分欄位轉換為數值，非數值設為 NaN，然後填充 0
+                credits = pd.to_numeric(df[found_credit_column], errors='coerce').fillna(0)
+                # 篩選掉 GPA 列中的"抵免"等非數字字串，只加總有效的數字學分
+                valid_credits = credits[credits > 0] # 只加總正數學分
+                current_table_credits = valid_credits.sum()
+                total_credits += current_table_credits
+                st.write(f"表格 {df_idx + 1} 的學分總計: **{current_table_credits:.2f}**")
+                
+                # 為了進一步確認，顯示該 DataFrame 的部分內容和學分欄
+                # st.dataframe(df[[found_credit_column]].head())
+
+            except Exception as e:
+                st.warning(f"表格 {df_idx + 1} 的學分欄位 '{found_credit_column}' 轉換為數值時發生錯誤: {e}")
+                st.warning("該表格的學分可能無法計入總數。")
+        else:
+            st.info(f"表格 {df_idx + 1} 未偵測到明確的學分欄位，不計入總學分。")
+            # st.dataframe(df.head()) # 可以顯示 DataFrame 前幾行以供除錯
+            
+    return total_credits
 
 def process_pdf_file(uploaded_file):
     """
@@ -61,23 +104,16 @@ def process_pdf_file(uploaded_file):
             for page_num, page in enumerate(pdf.pages):
                 st.subheader(f"頁面 {page_num + 1}")
 
-                # 這裡你可以根據需要調整 table_settings
-                # 對於成績單這類有清晰線條的表格，'lines' 策略通常效果不錯。
-                # 如果仍有問題，可以嘗試調整容忍度或將策略改為 'text'。
                 table_settings = {
                     "vertical_strategy": "lines",
                     "horizontal_strategy": "lines",
-                    "snap_tolerance": 3,           # 調整線條捕捉的容忍度
-                    "join_tolerance": 3,           # 調整合併線條的容忍度
-                    "edge_min_length": 3,          # 最小邊緣長度，避免偵測到過短的線條
-                    "text_tolerance": 1,           # 文本接近線條的容忍度
-                    # 如果表格線條不明顯，可以嘗試：
-                    # "vertical_strategy": "text",
-                    # "horizontal_strategy": "text",
+                    "snap_tolerance": 3,
+                    "join_tolerance": 3,
+                    "edge_min_length": 3,
+                    "text_tolerance": 1,
                 }
 
                 try:
-                    # 嘗試提取當前頁面上的所有表格
                     tables = page.extract_tables(table_settings)
 
                     if not tables:
@@ -87,32 +123,22 @@ def process_pdf_file(uploaded_file):
                     for table_idx, table in enumerate(tables):
                         st.markdown(f"**頁面 {page_num + 1} 的表格 {table_idx + 1}**")
                         
-                        # 使用 normalize_text 函數處理每個單元格
                         processed_table = []
                         for row in table:
                             normalized_row = [normalize_text(cell) for cell in row]
                             processed_table.append(normalized_row)
                         
-                        # DEBUG: 顯示原始處理後的表格內容，幫助理解問題
-                        # st.json(processed_table) 
-                        
                         if not processed_table:
                             st.info(f"表格 **{table_idx + 1}** 提取後為空。")
                             continue
 
-                        # 處理欄位名稱
                         header_row = processed_table[0]
                         data_rows = processed_table[1:]
 
-                        # 使用 make_unique_columns 確保欄位名稱唯一
                         unique_columns = make_unique_columns(header_row)
 
                         if data_rows:
-                            # 確保數據行的列數與欄位名稱的列數匹配
-                            # 如果不匹配，需要調整數據或欄位名稱的長度
-                            # 這裡選擇截斷或填充最短的那個，以避免錯誤
                             num_columns_header = len(unique_columns)
-                            # 統一所有行的長度為標題行的長度
                             cleaned_data_rows = []
                             for row in data_rows:
                                 if len(row) > num_columns_header:
@@ -147,32 +173,34 @@ def process_pdf_file(uploaded_file):
 
 # --- Streamlit 應用主體 ---
 def main():
-    st.set_page_config(page_title="PDF 成績單提取工具", layout="wide")
-    st.title("📄 PDF 成績單表格數據提取")
+    st.set_page_config(page_title="PDF 成績單提取與學分計算工具", layout="wide")
+    st.title("📄 PDF 成績單表格數據提取與學分計算")
 
-    st.write("請上傳您的 PDF 成績單檔案，工具將嘗試提取其中的表格數據。")
+    st.write("請上傳您的 PDF 成績單檔案，工具將嘗試提取其中的表格數據並計算總學分。")
 
     uploaded_file = st.file_uploader("選擇一個 PDF 檔案", type="pdf")
 
     if uploaded_file is not None:
         st.success(f"已上傳檔案: **{uploaded_file.name}**")
-        with st.spinner("正在處理 PDF，請稍候..."): # 使用 with st.spinner 確保顯示正確
-            # 處理 PDF 檔案
+        with st.spinner("正在處理 PDF，請稍候..."):
             extracted_dfs = process_pdf_file(uploaded_file)
 
         if extracted_dfs:
             st.success("成功提取所有表格數據！")
             st.write("以下是所有提取到的表格數據 (每個表格作為一個 DataFrame)：")
             
-            # 你可以選擇如何合併或顯示這些 DataFrame
-            # 例如，將它們合併成一個大的 DataFrame (如果結構相容)
+            # 嘗試將所有 DataFrame 合併，如果欄位名稱不一致，會導致 NaN
             try:
-                # 嘗試將所有 DataFrame 合併，如果欄位名稱不一致，會導致 NaN
-                # 這裡不再強制要求 Reindexing valid，因為我們已經處理了單個 DataFrame 的欄位唯一性
                 combined_df = pd.concat(extracted_dfs, ignore_index=True)
-                st.subheader("所有表格合併後的數據 (若結構相容)")
+                st.subheader("所有歷年成績表格合併後的數據 (若結構相容)")
                 st.dataframe(combined_df)
                 
+                # 計算總學分
+                # 這裡傳入的是 extracted_dfs，因為 calculate_total_credits 會自行篩選包含學分的表格
+                total_credits = calculate_total_credits(extracted_dfs)
+                st.markdown(f"## 總計學分: **{total_credits:.2f}**")
+                st.info("請注意：學分計算是基於偵測到的「學分」欄位加總，並排除「抵免」等非數字或非正數學分。")
+
                 # 提供下載選項
                 csv_data = combined_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
@@ -184,6 +212,10 @@ def main():
             except Exception as e_concat:
                 st.warning(f"無法將所有提取的表格合併：`{e_concat}`。這通常是因為不同表格的欄位結構或數量不一致。")
                 st.info("每個單獨的表格已在上方獨立顯示，您可以查看單獨的表格結果。")
+                # 即使合併失敗，也嘗試計算學分
+                total_credits = calculate_total_credits(extracted_dfs)
+                st.markdown(f"## 總計學分: **{total_credits:.2f}**")
+                st.info("請注意：學分計算是基於偵測到的「學分」欄位加總，並排除「抵免」等非數字或非正數學分。")
         else:
             st.warning("未從 PDF 中提取到任何表格數據。請檢查 PDF 內容或嘗試調整 `table_settings`。")
     else:
