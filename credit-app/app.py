@@ -69,6 +69,13 @@ def parse_credit_and_gpa(text):
     """
     text_clean = normalize_text(text)
     
+    # 首先檢查是否是「通過」或「抵免」等關鍵詞
+    if text_clean.lower() in ["通過", "抵免", "pass", "exempt"]:
+        # 如果是這些關鍵詞，學分通常不會直接在字串中，但可能在其他欄位
+        # 在此函數中，我們只解析當前單元格的內容。如果單元格只有這些詞，則學分為0
+        # 實際學分會在 calculate_total_credits 中從學分欄位獲取
+        return 0.0, text_clean # 返回解析到的「通過」等字串作為 GPA
+
     # 嘗試匹配 "GPA 學分" 模式 (例如 "A 2", "C- 3")
     match_gpa_credit = re.match(r'([A-Fa-f][+\-]?)\s*(\d+(\.\d+)?)', text_clean)
     if match_gpa_credit:
@@ -107,6 +114,40 @@ def parse_credit_and_gpa(text):
 
     return 0.0, ""
 
+def is_grades_table(df):
+    """
+    判斷一個 DataFrame 是否為有效的成績單表格。
+    透過檢查是否存在預期的欄位關鍵字來判斷。
+    """
+    header_str = " ".join([normalize_text(col) for col in df.columns])
+    
+    # 檢查是否包含核心的成績單欄位關鍵字
+    core_keywords = ["學年", "學期", "科目名稱", "學分", "GPA"]
+    
+    # 優先檢查原始列名中是否有這些關鍵字，或者在 make_unique_columns 處理後的列名中是否存在
+    has_subject = any(re.search(r'(科目|課程)名稱', col, re.IGNORECASE) for col in df.columns)
+    has_credit = any(re.search(r'學分', col, re.IGNORECASE) for col in df.columns)
+    has_gpa = any(re.search(r'GPA|成績|Grade', col, re.IGNORECASE) for col in df.columns)
+    has_year_sem = any(re.search(r'學年|學期', col, re.IGNORECASE) for col in df.columns)
+
+    # 如果缺乏任何一個核心欄位，則很可能不是成績表格
+    if not (has_subject and has_credit and has_gpa and has_year_sem):
+        # 進一步檢查行數據，防止誤判
+        # 檢查前幾行數據，判斷是否包含科目名稱的特徵 (中文且長度較長)
+        potential_subject_cols = [col for col in df.columns if re.search(r'(科目|課程)名稱|Subject', col, re.IGNORECASE)]
+        if not potential_subject_cols:
+             # 如果沒有明顯的科目名稱列，檢查是否有列包含大量中文字符且長度較長
+            for col in df.columns:
+                sample_data = df[col].head(5).apply(normalize_text).tolist()
+                chinese_chars_count = sum(1 for item in sample_data if re.search(r'[\u4e00-\u9fa5]', item) and len(item) > 4)
+                if chinese_chars_count >= 2: # 至少有兩行看起來像中文科目名稱
+                    has_subject = True
+                    break
+
+    # 如果仍然未能確定為成績表格，則考慮為非成績表格
+    return has_subject and has_credit and has_gpa and has_year_sem
+
+
 def calculate_total_credits(df_list):
     """
     從提取的 DataFrames 列表中計算總學分。
@@ -121,7 +162,8 @@ def calculate_total_credits(df_list):
     subject_column_keywords = ["科目名稱", "課程名稱", "Course Name", "Subject Name", "科目", "課程"] 
     gpa_column_keywords = ["GPA", "成績", "Grade"] 
     
-    failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"] # 增加 '不及格'
+    # 更新不及格判斷，不再包含「通過」或「抵免」
+    failing_grades = ["D", "D-", "E", "F", "X", "不通過", "未通過", "不及格"] 
 
     for df_idx, df in enumerate(df_list):
         found_credit_column = None
@@ -154,17 +196,15 @@ def calculate_total_credits(df_list):
             # 判斷潛在學分欄位
             numeric_like_count = 0
             for item_str in sample_data:
-                # 兼容 "通過", "抵免", "Pass", "Exempt" 這種情況
-                if item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
+                # 兼容 "通過", "抵免", "Pass", "Exempt" 這種情況，但它們本身不影響學分數的數字判斷
+                # 我們只關心是否能解析出數字學分
+                credit_val, _ = parse_credit_and_gpa(item_str)
+                if 0.0 < credit_val <= 10.0: # 學分大於0且在合理範圍內
                     numeric_like_count += 1
-                else:
-                    credit_val, _ = parse_credit_and_gpa(item_str)
-                    if 0.0 < credit_val <= 10.0: # 學分大於0且在合理範圍內
-                        numeric_like_count += 1
             if total_sample_count > 0 and numeric_like_count / total_sample_count >= 0.6: 
                 potential_credit_columns.append(col_name)
 
-            # 斷潛在科目名稱欄位 (更智能的判斷)
+            # 判斷潛在科目名稱欄位 (更智能的判斷)
             subject_like_count = 0
             for item_str in sample_data:
                 # 判斷是否看起來像科目名稱: 包含中文字符，長度通常較長 (>4個字), 且不全是數字或單個字母成績
@@ -176,8 +216,8 @@ def calculate_total_credits(df_list):
             # 判斷潛在 GPA 欄位
             gpa_like_count = 0
             for item_str in sample_data:
-                # 檢查是否是標準的 GPA 字母等級 (A+, B-, C, D, E, F) 或數字分數
-                if re.match(r'^[A-Fa-f][+\-]?' , item_str) or (item_str.isdigit() and len(item_str) <=3): # 考慮分數
+                # 檢查是否是標準的 GPA 字母等級 (A+, B-, C, D, E, F) 或數字分數，或者「通過/抵免」
+                if re.match(r'^[A-Fa-f][+\-]?' , item_str) or (item_str.isdigit() and len(item_str) <=3) or item_str.lower() in ["通過", "抵免", "pass", "exempt"]: 
                     gpa_like_count += 1
             if total_sample_count > 0 and gpa_like_count / total_sample_count >= 0.6: 
                 potential_gpa_columns.append(col_name)
@@ -217,19 +257,21 @@ def calculate_total_credits(df_list):
                 found_gpa_column = potential_gpa_columns[0]
 
 
-        if found_credit_column:
+        if found_credit_column: # 只有找到學分欄位才進行處理
             try:
                 for row_idx, row in df.iterrows():
                     # 嘗試從學分或 GPA 欄位獲取學分和 GPA
                     extracted_credit = 0.0
                     extracted_gpa = ""
 
-                    if found_credit_column:
+                    # 從學分欄位提取學分和潛在的GPA
+                    if found_credit_column and found_credit_column in row:
                         extracted_credit, extracted_gpa_from_credit_col = parse_credit_and_gpa(row[found_credit_column])
-                        if extracted_gpa_from_credit_col: # 如果從學分欄位同時解析出GPA，則優先使用
+                        if extracted_gpa_from_credit_col: 
                             extracted_gpa = extracted_gpa_from_credit_col
                     
-                    if found_gpa_column and not extracted_gpa: # 如果 GPA 欄位存在且尚未從學分欄位獲取到 GPA
+                    # 如果GPA欄位存在且目前沒有獲取到GPA，則從GPA欄位獲取
+                    if found_gpa_column and found_gpa_column in row and not extracted_gpa: 
                         gpa_from_gpa_col = normalize_text(row[found_gpa_column])
                         if gpa_from_gpa_col:
                             extracted_gpa = gpa_from_gpa_col.upper()
@@ -239,6 +281,7 @@ def calculate_total_credits(df_list):
                         extracted_credit = 0.0
 
                     is_failing_grade = False
+                    # 檢查是否為不及格成績，不包含「通過」或「抵免」
                     if extracted_gpa:
                         gpa_clean = re.sub(r'[+\-]', '', extracted_gpa).upper() 
                         if gpa_clean in failing_grades:
@@ -251,18 +294,21 @@ def calculate_total_credits(df_list):
                             except ValueError:
                                 pass
                     
-                    # 處理「通過」和「抵免」情況
-                    # 即使有學分值，如果 GPA 欄位明確為「通過」或「抵免」，則不計入總學分
+                    # 處理「通過」和「抵免」情況：現在它們會被計入學分，除非學分為0
+                    # 如果學分為0，且成績為「通過」/「抵免」，則仍計入通過課程列表，但不加總學分
+                    is_passed_or_exempt = False
                     if (found_gpa_column and normalize_text(row[found_gpa_column]).lower() in ["通過", "抵免", "pass", "exempt"]) or \
                        (found_credit_column and normalize_text(row[found_credit_column]).lower() in ["通過", "抵免", "pass", "exempt"]):
-                        extracted_credit = 0.0 # 強制設為0學分，不計入總學分
+                        is_passed_or_exempt = True
+                        if extracted_credit == 0.0: # 如果學分顯示為0，但同時是通過/抵免，那麼學分就確實是0，不加總
+                            pass # 不改變 extracted_credit
 
                     course_name = "未知科目" 
                     if found_subject_column and found_subject_column in row:
                         temp_name = normalize_text(row[found_subject_column])
                         if len(temp_name) > 2 and re.search(r'[\u4e00-\u9fa5]', temp_name): # 確保是有效的中文科目名
                             course_name = temp_name
-                        elif not temp_name and found_gpa_column: # 如果科目名稱欄位是空的，但有GPA，嘗試從前一列獲取（常見於合併單元格）
+                        elif not temp_name: # 如果科目名稱欄位是空的，嘗試從前一列獲取（常見於合併單元格）
                             try:
                                 # 找到當前科目名稱欄位的索引
                                 current_col_idx = df.columns.get_loc(found_subject_column)
@@ -285,32 +331,32 @@ def calculate_total_credits(df_list):
                         semester = normalize_text(row[df.columns[1]])
 
 
-                    if extracted_credit > 0 or (extracted_credit == 0 and is_failing_grade): # 處理有學分但不及格的科目，或者學分為0的通過/抵免科目
-                        if is_failing_grade:
-                            failed_courses.append({
-                                "學年度": acad_year,
-                                "學期": semester,
-                                "科目名稱": course_name, 
-                                "學分": extracted_credit, 
-                                "GPA": extracted_gpa, 
-                                "來源表格": df_idx + 1
-                            })
-                        elif extracted_credit > 0: # 只有學分大於0且非不及格才計入總學分
-                            total_credits += extracted_credit
-                            calculated_courses.append({
-                                "學年度": acad_year,
-                                "學期": semester,
-                                "科目名稱": course_name, 
-                                "學分": extracted_credit, 
-                                "GPA": extracted_gpa, 
-                                "來源表格": df_idx + 1
-                            })
+                    # 判斷是否計入總學分或不及格學分
+                    if is_failing_grade:
+                        failed_courses.append({
+                            "學年度": acad_year,
+                            "學期": semester,
+                            "科目名稱": course_name, 
+                            "學分": extracted_credit, 
+                            "GPA": extracted_gpa, 
+                            "來源表格": df_idx + 1
+                        })
+                    elif extracted_credit > 0 or is_passed_or_exempt: # 學分大於0，或者雖然學分為0但狀態是通過/抵免，都計入通過課程
+                        total_credits += extracted_credit # 只有非不及格且學分大於0才加總
+                        calculated_courses.append({
+                            "學年度": acad_year,
+                            "學期": semester,
+                            "科目名稱": course_name, 
+                            "學分": extracted_credit, 
+                            "GPA": extracted_gpa, 
+                            "來源表格": df_idx + 1
+                        })
                 
             except Exception as e:
                 st.warning(f"表格 {df_idx + 1} 的學分計算時發生錯誤: `{e}`")
                 st.warning("該表格的學分可能無法計入總數。請檢查學分和GPA欄位數據是否正確。")
-        else: # 這個else是屬於 `if found_credit_column:` 的，如果沒有找到學分欄位，就直接跳過
-            pass 
+        else:
+            pass # 不顯示此類信息，因為表格不包含學分欄位，不需處理
             
     return total_credits, calculated_courses, failed_courses
 
@@ -341,7 +387,7 @@ def process_pdf_file(uploaded_file):
                     tables = current_page.extract_tables(table_settings)
 
                     if not tables:
-                        st.warning(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
+                        # st.warning(f"頁面 **{page_num + 1}** 未偵測到表格。這可能是由於 PDF 格式複雜或表格提取設定不適用。")
                         continue
 
                     for table_idx, table in enumerate(tables):
@@ -351,7 +397,7 @@ def process_pdf_file(uploaded_file):
                             processed_table.append(normalized_row)
                         
                         if not processed_table:
-                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
+                            # st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
                             continue
 
                         if len(processed_table) > 0:
@@ -376,7 +422,11 @@ def process_pdf_file(uploaded_file):
 
                             try:
                                 df_table = pd.DataFrame(cleaned_data_rows, columns=unique_columns)
-                                all_grades_data.append(df_table)
+                                # 判斷是否為成績單表格，如果不是，則跳過
+                                if is_grades_table(df_table):
+                                    all_grades_data.append(df_table)
+                                else:
+                                    st.info(f"頁面 {page_num + 1} 的表格 {table_idx + 1} (標題: {header_row}) 未識別為成績單表格，已跳過。")
                             except Exception as e_df:
                                 st.error(f"頁面 {page_num + 1} 表格 {table_idx + 1} 轉換為 DataFrame 時發生錯誤: `{e_df}`")
                                 st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
@@ -444,13 +494,12 @@ def main():
 
             if failed_courses:
                 st.markdown("---")
-                st.markdown("### ⚠️ 不及格或不計學分的課程列表")
+                st.markdown("### ⚠️ 不及格的課程列表")
                 failed_df = pd.DataFrame(failed_courses)
                 display_failed_cols = ['學年度', '學期', '科目名稱', '學分', 'GPA', '來源表格']
                 final_display_failed_cols = [col for col in display_failed_cols if col in failed_df.columns]
                 st.dataframe(failed_df[final_display_failed_cols], height=200, use_container_width=True)
-                st.info("這些科目因成績不及格 ('D', 'E', 'F' 等) 或被標記為 '通過'/'抵免' 而未計入總學分。")
-
+                st.info("這些科目因成績不及格 ('D', 'E', 'F' 等) 而未計入總學分。") # 更新訊息
 
             # 提供下載選項 
             if calculated_courses or failed_courses:
