@@ -16,8 +16,8 @@ def parse_gpa_to_numeric(gpa_str):
         'C+': 2.3, 'C': 2.0, 'C-': 1.7,
         'D+': 1.3, 'D': 1.0, 'D-': 0.7,
         'E': 0.0, 'F': 0.0,
-        '抵免': 999.0, # 抵免也算通過
-        '通過': 999.0  # 通過也算通過
+        '抵免': 999.0, # Special value for '抵免' - treated as passed for credit count
+        '通過': 999.0  # Special value for '通過' - treated as passed for credit count
     }
     return gpa_map.get(str(gpa_str).strip(), 0.0)
 
@@ -31,10 +31,17 @@ def analyze_student_grades(df):
 
     df['學分'] = pd.to_numeric(df['學分'], errors='coerce').fillna(0)
     df['GPA_Numeric'] = df['GPA'].apply(parse_gpa_to_numeric)
-    df['是否通過'] = df['GPA_Numeric'].apply(lambda x: x >= 1.7)
+    
+    # Define "passed" condition: GPA_Numeric >= 1.7 OR GPA is '抵免' OR GPA is '通過'
+    # Use original 'GPA' column for '抵免'/'通過' check to avoid relying on 999.0
+    # Also ensure 學分 is greater than 0
+    df['是否通過'] = (df['GPA_Numeric'] >= 1.7) | (df['GPA'].astype(str).str.strip() == '抵免') | (df['GPA'].astype(str).str.strip() == '通過')
+    
+    # Filter for courses that passed and have credits
     passed_courses_df = df[df['是否通過'] & (df['學分'] > 0)].copy()
 
-    total_earned_credits, remaining_credits_to_graduate = passed_courses_df['學分'].sum(), max(0, GRADUATION_REQUIREMENT - passed_courses_df['學分'].sum())
+    total_earned_credits = passed_courses_df['學分'].sum()
+    remaining_credits_to_graduate = max(0, GRADUATION_REQUIREMENT - total_earned_credits)
 
     return total_earned_credits, remaining_credits_to_graduate, passed_courses_df
 
@@ -60,9 +67,6 @@ def normalize_text(text):
     text = text.replace('Ｅ', 'E') # FULLWIDTH LATIN CAPITAL LETTER E -> LATIN CAPITAL LETTER E
     text = text.replace('Ｆ', 'F') # FULLWIDTH LATIN CAPITAL LETTER F -> LATIN CAPITAL LETTER F
     text = text.replace('Ｇ', 'G') # FULLWIDTH LATIN CAPITAL LETTER G -> LATIN CAPITAL LETTER G
-    # Add other common full-width characters if needed, e.g., for digits or other letters.
-    # It might be more robust to use unicodedata.normalize('NFKC', text) if many such chars are expected,
-    # but explicit replacements are safer for targeted fixes.
     return text
 
 
@@ -91,20 +95,17 @@ def main():
                 for page_num, page in enumerate(pdf.pages):
                     debug_messages.append(f"--- 正在處理頁面 {page_num + 1}/{total_pages} ---")
 
-                    # Crop an area to focus on the main content, avoiding headers/footers of the PDF itself
-                    # Adjust top_y_crop and bottom_y_crop based on your PDF's layout
-                    # For example, if there's always a title at the top, crop below it.
-                    top_y_crop = 60 # Assuming content starts roughly 60 units from top
-                    bottom_y_crop = page.height # Take full height for now, adjust if footers cause issues
+                    top_y_crop = 60 
+                    bottom_y_crop = page.height 
 
                     cropped_page = page.crop((0, top_y_crop, page.width, bottom_y_crop)) 
                     
                     table_settings = {
                         "horizontal_strategy": "lines",
                         "vertical_strategy": "lines",
-                        "snap_tolerance": 1,             # Strict snapping to lines
-                        "text_tolerance": 1,             # Strict text-to-line alignment
-                        "join_tolerance": 1,             # Strict joining of broken lines
+                        "snap_tolerance": 1,             
+                        "text_tolerance": 1,             
+                        "join_tolerance": 1,             
                         "min_words_horizontal": 1, 
                         "min_words_vertical": 1 
                     }
@@ -126,9 +127,7 @@ def main():
                             debug_messages.append(f"  表格 {table_idx + 1} 無效 (行數不足或為空)。")
                             continue
 
-                        # --- 增強表頭尋找邏輯 ---
-                        # 搜尋表格前幾行來找到實際的表頭
-                        potential_header_search_range = min(len(table), 5) # 檢查前5行
+                        potential_header_search_range = min(len(table), 5) 
                         header_row_found = False
                         header = []
                         header_row_start_idx = -1 
@@ -138,14 +137,13 @@ def main():
                             cleaned_h_row_list = [normalize_text(col) for col in h_row]
 
                             is_potential_header = True
-                            # 檢查是否包含所有關鍵字
                             for kw in ["學年度", "科目名稱", "學分", "GPA"]: 
                                 if not any(kw in cell for cell in cleaned_h_row_list):
                                     is_potential_header = False
                                     break
                             
                             if is_potential_header:
-                                header = [normalize_text(col) for col in h_row] # Normalize the actual header found
+                                header = [normalize_text(col) for col in h_row] 
                                 header_row_found = True
                                 header_row_start_idx = h_idx 
                                 break 
@@ -159,7 +157,6 @@ def main():
                         col_to_index = {} 
                         index_to_col = {} 
 
-                        # 建立表頭到索引的映射
                         for i, h_ext in enumerate(header):
                             if "學年度" in h_ext: col_to_index["學年度"] = i; index_to_col[i] = "學年度"
                             elif "學期" in h_ext: col_to_index["學期"] = i; index_to_col[i] = "學期"
@@ -182,9 +179,8 @@ def main():
                         GPA_idx = col_to_index.get("GPA")
 
                         processed_rows = []
-                        current_row_data_temp = None # 用於累積多行數據
+                        current_row_data_temp = None 
                         
-                        # 從表頭的下一行開始處理數據
                         for row_num_in_table, row in enumerate(table[header_row_start_idx + 1:]): 
                             cleaned_row = [normalize_text(c) for c in row]
                             
@@ -197,7 +193,6 @@ def main():
                             選課代號_val = cleaned_row[選課代號_idx] if 選課代號_idx is not None and len(cleaned_row) > 選課代號_idx else ""
                             科目名稱_val = cleaned_row[科目名稱_idx] if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx else ""
 
-                            # 判斷是否為新的成績行
                             if 學年度_val.isdigit() and len(學年度_val) == 3 and 選課代號_val.strip() != '':
                                 is_new_grade_row = True
                                 debug_messages.append(f"      判斷: 滿足新的成績行條件 (學年度='{學年度_val}', 選課代號='{選課代號_val}')")
@@ -207,8 +202,7 @@ def main():
                                 debug_messages.append(f"      判斷: 學年度欄位為空或不符合數字格式 '{學年度_val}' 或選課代號為空。")
 
                             if is_new_grade_row:
-                                if current_row_data_temp: # 如果有累積的數據，先處理前一行
-                                    # --- 數據重組：按期望的順序和表頭索引填充數據 ---
+                                if current_row_data_temp: 
                                     reordered_row = [""] * len(expected_columns_order)
                                     for col_name, idx_in_header in col_to_index.items():
                                         if col_name in expected_columns_order:
@@ -218,13 +212,12 @@ def main():
                                     processed_rows.append(reordered_row)
                                     debug_messages.append(f"      -> 前一行完成，重新排序並添加到 processed_rows: {processed_rows[-1]}")
                                 
-                                current_row_data_temp = list(cleaned_row) # 開始新的數據行累積
+                                current_row_data_temp = list(cleaned_row) 
                                 debug_messages.append(f"      -> 新的成績行開始累積: {current_row_data_temp}")
-                            elif current_row_data_temp: # 如果不是新行，但有正在累積的數據 (可能是續行)
+                            elif current_row_data_temp: 
                                 debug_messages.append(f"      判斷: 檢查是否為當前行續行...")
 
                                 is_subject_continuation = False
-                                # 判斷科目名稱續行條件：學年度和選課代號都為空，科目名稱有內容，且原始行長度至少到科目名稱索引
                                 if 科目名稱_idx is not None and len(cleaned_row) > 科目名稱_idx and \
                                    學年度_val.strip() == '' and 選課代號_val.strip() == '' and 科目名稱_val.strip() != '':
                                     is_subject_continuation = True
@@ -232,7 +225,6 @@ def main():
                                 
                                 is_gpa_continuation = False
                                 GPA_val = cleaned_row[GPA_idx] if GPA_idx is not None and len(cleaned_row) > GPA_idx else ""
-                                # 判斷 GPA 續行條件：學年度和選課代號都為空，GPA 有內容，且原始行長度至少到 GPA 索引
                                 if GPA_idx is not None and len(cleaned_row) > GPA_idx and \
                                    學年度_val.strip() == '' and 選課代號_val.strip() == '' and GPA_val.strip() != '':
                                     is_gpa_continuation = True
@@ -243,15 +235,12 @@ def main():
                                     debug_messages.append(f"        -> 檢測到完全空白行。")
 
                                 if is_subject_continuation:
-                                    # 合併科目名稱內容
                                     current_row_data_temp[科目名稱_idx] += " " + cleaned_row[科目名稱_idx]
                                     debug_messages.append(f"      -> 科目名稱續行合併後: {current_row_data_temp}")
                                 elif is_gpa_continuation:
-                                    # 合併 GPA 內容
                                     current_row_data_temp[GPA_idx] += " " + cleaned_row[GPA_idx]
                                     debug_messages.append(f"      -> GPA 續行合併後: {current_row_data_temp}")
                                 elif is_completely_empty_row:
-                                    # 如果遇到完全空白行，將當前累積的行視為完成
                                     if current_row_data_temp: 
                                         reordered_row = [""] * len(expected_columns_order)
                                         for col_name, idx_in_header in col_to_index.items():
@@ -261,9 +250,8 @@ def main():
                                                     reordered_row[target_idx] = current_row_data_temp[idx_in_header]
                                         processed_rows.append(reordered_row)
                                         debug_messages.append(f"      -> 檢測到空白行，前一行完成並添加到 processed_rows: {processed_rows[-1]}")
-                                    current_row_data_temp = None # 清空，準備接收新行
+                                    current_row_data_temp = None 
                                 else: 
-                                    # 如果不符合任何模式，視為雜訊或錯誤，結束當前行
                                     debug_messages.append(f"      -> 不符合任何模式 (新行/續行/空白行)，視為雜訊或錯誤，結束當前行。")
                                     if current_row_data_temp: 
                                         reordered_row = [""] * len(expected_columns_order)
@@ -274,12 +262,11 @@ def main():
                                                     reordered_row[target_idx] = current_row_data_temp[idx_in_header]
                                         processed_rows.append(reordered_row)
                                         debug_messages.append(f"      -> 將當前行添加到 processed_rows: {processed_rows[-1]}")
-                                    current_row_data_temp = None # 清空，準備接收新行
-                            else: # current_row_data_temp 為空，且當前行不符合新行條件
+                                    current_row_data_temp = None 
+                            else: 
                                 debug_messages.append(f"      -> current_row_data_temp 為空，且當前行不符合新行條件，跳過。")
                                 pass 
 
-                        # 處理最後一個累積的行 (如果有的話)
                         if current_row_data_temp: 
                             reordered_row = [""] * len(expected_columns_order)
                             for col_name, idx_in_header in col_to_index.items():
@@ -294,7 +281,6 @@ def main():
                         debug_messages.append(f"  處理後部分數據 (前5行): {processed_rows[:5]}")
 
                         if processed_rows:
-                            # 直接使用 expected_columns_order 作為 DataFrame 的列名
                             df_table = pd.DataFrame(processed_rows, columns=expected_columns_order)
                             
                             for col in df_table.columns:
@@ -316,7 +302,6 @@ def main():
             full_grades_df.dropna(how='all', inplace=True)
 
             initial_rows = len(full_grades_df)
-            # 過濾學年度欄位不是3位數字的行，但要確保學年度_val在清洗後是真的三位數字
             full_grades_df = full_grades_df[
                 full_grades_df['學年度'].astype(str).str.match(r'^\d{3}$')
             ]
