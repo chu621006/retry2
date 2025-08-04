@@ -15,11 +15,13 @@ def normalize_text(cell_content):
         return ""
 
     text = ""
+    # 檢查是否是 pdfplumber 的 Text 物件，它通常有 'text' 屬性
     if hasattr(cell_content, 'text'):
         text = str(cell_content.text)
     elif isinstance(cell_content, str):
         text = cell_content
     else:
+        # 對於其他未知類型，嘗試直接轉換為字串
         text = str(cell_content)
     
     return re.sub(r'\s+', ' ', text).strip()
@@ -34,6 +36,7 @@ def make_unique_columns(columns_list):
     for col in columns_list:
         original_col_cleaned = normalize_text(col)
         
+        # 如果清理後還是空的，或者太短無法識別為有意義的標題，則給予通用名稱
         if not original_col_cleaned or len(original_col_cleaned) < 2: 
             name_base = "Column"
             current_idx = 1
@@ -43,6 +46,7 @@ def make_unique_columns(columns_list):
         else:
             name = original_col_cleaned
         
+        # 處理重複名稱，避免 Column_1, Column_1_1 這種情況
         final_name = name
         counter = seen[name]
         while final_name in unique_columns:
@@ -65,9 +69,12 @@ def calculate_total_credits(df_list):
 
     st.subheader("學分計算分析")
 
+    # 定義可能的學分欄位名稱關鍵字 (中文和英文)
     credit_column_keywords = ["學分", "學分數", "學分(GPA)", "學 分", "Credits", "Credit"] 
-    subject_column_keywords = ["科目名稱", "課程名稱", "Course Name", "Subject Name", "科目"] # 新增科目名稱關鍵字
-
+    # 定義可能的科目名稱關鍵字
+    subject_column_keywords = ["科目名稱", "課程名稱", "Course Name", "Subject Name", "科目"] 
+    
+    # 用於從可能包含GPA的字符串中提取數字學分，例如 "A 2" -> 2, "3" -> 3
     credit_pattern = re.compile(r'(\d+(\.\d+)?)') 
 
     for df_idx, df in enumerate(df_list):
@@ -86,8 +93,9 @@ def calculate_total_credits(df_list):
             if any(keyword in cleaned_col_for_match for keyword in subject_column_keywords):
                 found_subject_column = col
             
+            # 如果兩個都找到了，就可以提前結束循環
             if found_credit_column and found_subject_column:
-                break # 兩個都找到就停止
+                break 
 
         # 步驟 2: 如果沒有明確匹配，嘗試從通用名稱 (Column_X) 中猜測學分和科目欄位
         if not found_credit_column or not found_subject_column:
@@ -98,34 +106,39 @@ def calculate_total_credits(df_list):
                 is_general_col = re.match(r"Column_\d+", col) or len(col.strip()) < 3
                 
                 # 檢查是否為潛在學分欄位
+                # 取前 N 行數據進行判斷，避免空行或表尾總計的干擾 (N=10 比較通用)
                 sample_data = df[col].head(10).apply(normalize_text).tolist()
                 numeric_like_count = 0
                 total_sample_count = len(sample_data)
                 
                 for item_str in sample_data:
-                    if item_str == "通過" or item_str == "抵免" or item_str.lower() in ["pass", "exempt"]:
+                    if item_str == "通過" or item_str == "抵免" or item_str.lower() in ["pass", "exempt"]: # 兼容英文
                         numeric_like_count += 1
                     else:
                         matches = credit_pattern.findall(item_str)
                         if matches:
                             try:
+                                # 嘗試轉換為浮點數，並檢查學分範圍 (例如 0.0 到 10.0)
                                 val = float(matches[-1][0])
-                                if 0.0 <= val <= 10.0: 
+                                if 0.0 <= val <= 10.0: # 學分通常不會超過 10
                                     numeric_like_count += 1
                             except ValueError:
                                 pass
                 
-                if total_sample_count > 0 and numeric_like_count / total_sample_count >= 0.6:
+                # 如果超過一半 (或更高比例) 的樣本數據看起來像學分，則認為可能是學分欄位
+                if total_sample_count > 0 and numeric_like_count / total_sample_count >= 0.6: # 提高識別門檻到 60%
                     potential_credit_columns.append(col)
                 
                 # 檢查是否為潛在科目名稱欄位 (若包含中文且非純數字)
                 if is_general_col:
                     subject_like_count = 0
                     for item_str in sample_data:
-                        if len(item_str) > 3 and not item_str.isdigit() and not re.match(r'^\d+(\.\d+)?$', item_str): # 至少3個字，不是純數字
+                        # 判斷是否看起來像科目名稱: 包含中文字符，長度大於3，且不全是數字
+                        if re.search(r'[\u4e00-\u9fa5]', item_str) and len(item_str) > 3 and not item_str.isdigit() and not re.match(r'^\d+(\.\d+)?$', item_str): 
                             subject_like_count += 1
                     if total_sample_count > 0 and subject_like_count / total_sample_count >= 0.7: # 更高門檻
                         potential_subject_columns.append(col)
+
 
             # 步驟 3: 根據推斷結果確定學分和科目欄位
             if not found_credit_column and potential_credit_columns:
@@ -145,7 +158,20 @@ def calculate_total_credits(df_list):
                 found_credit_column = best_credit_candidate
 
             if not found_subject_column and potential_subject_columns:
-                found_subject_column = potential_subject_columns[0] # 簡單選擇第一個潛在科目欄位
+                # 如果學分欄位已確定，且科目欄位未確定，則選擇學分欄位左側最接近的科目欄位
+                if found_credit_column:
+                    credit_col_idx = df.columns.get_loc(found_credit_column)
+                    min_dist = float('inf')
+                    best_subject_candidate = None
+                    for p_col in potential_subject_columns:
+                        p_col_idx = df.columns.get_loc(p_col)
+                        if p_col_idx < credit_col_idx and (credit_col_idx - p_col_idx) < min_dist:
+                            min_dist = credit_col_idx - p_col_idx
+                            best_subject_candidate = p_col
+                    if best_subject_candidate:
+                        found_subject_column = best_subject_candidate
+                elif potential_subject_columns: # 否則選擇第一個潛在科目欄位
+                    found_subject_column = potential_subject_columns[0]
 
         if found_credit_column:
             st.info(f"從表格 {df_idx + 1} 偵測到學分欄位: '{found_credit_column}'。")
@@ -160,21 +186,24 @@ def calculate_total_credits(df_list):
                     item_str = normalize_text(row[found_credit_column])
                     
                     credit_val = 0.0
+                    # 優先處理已知非數字的學分情況
                     if item_str == "通過" or item_str == "抵免" or item_str.lower() in ["pass", "exempt"]:
                         credit_val = 0.0
                     else:
+                        # 嘗試用正則表達式從字串中提取所有數字
                         matches = credit_pattern.findall(item_str)
                         if matches:
+                            # 假設最後一個數字通常是學分，例如 "A 2" 中的 "2"
                             try:
                                 val = float(matches[-1][0])
-                                if 0.0 <= val <= 10.0: 
+                                if 0.0 <= val <= 10.0: # 確保提取的數字在合理學分範圍內
                                     credit_val = val
                                 else:
-                                    credit_val = 0.0 
+                                    credit_val = 0.0 # 超出範圍的數字不計入學分
                             except ValueError:
                                 credit_val = 0.0
                         else:
-                            credit_val = 0.0 
+                            credit_val = 0.0 # 沒有匹配到數字
                     
                     if credit_val > 0: # 只記錄有學分的科目
                         current_table_credits += credit_val
@@ -209,15 +238,16 @@ def process_pdf_file(uploaded_file):
             st.info(f"PDF 總頁數: **{num_pages}**")
 
             for page_num, page in enumerate(pdf.pages):
-                st.subheader(f"頁面 {page_num + 1}")
+                # 為了簡潔輸出，移除了每頁的詳細標題，但保留頁面號碼用於分析追蹤
+                # st.subheader(f"頁面 {page_num + 1}") 
 
                 table_settings = {
-                    "vertical_strategy": "lines", 
-                    "horizontal_strategy": "lines", 
-                    "snap_tolerance": 3, 
-                    "join_tolerance": 3, 
-                    "edge_min_length": 3, 
-                    "text_tolerance": 1, 
+                    "vertical_strategy": "lines", # 基於線條偵測垂直分隔
+                    "horizontal_strategy": "lines", # 基於線條偵測水平分隔
+                    "snap_tolerance": 3, # 垂直/水平線的捕捉容忍度
+                    "join_tolerance": 3, # 斷開線段的連接容忍度
+                    "edge_min_length": 3, # 偵測到的線條最小長度
+                    "text_tolerance": 1, # 文本與偵測線條的容忍度 (低於此值則認為文本在線上)
                 }
                 
                 current_page = page 
@@ -230,17 +260,20 @@ def process_pdf_file(uploaded_file):
                         continue
 
                     for table_idx, table in enumerate(tables):
-                        st.markdown(f"**頁面 {page_num + 1} 的表格 {table_idx + 1}**")
+                        # 為了簡潔輸出，移除了每個表格的詳細標題
+                        # st.markdown(f"**頁面 {page_num + 1} 的表格 {table_idx + 1}**")
                         
                         processed_table = []
+                        # 確保在這裡正確使用 normalize_text 處理所有單元格內容
                         for row in table:
                             normalized_row = [normalize_text(cell) for cell in row]
                             processed_table.append(normalized_row)
                         
                         if not processed_table:
-                            st.info(f"表格 **{table_idx + 1}** 提取後為空。")
+                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 提取後為空。")
                             continue
 
+                        # 假設第一行是標題行，但確保有足夠的行
                         if len(processed_table) > 0:
                             header_row = processed_table[0]
                             data_rows = processed_table[1:]
@@ -254,6 +287,7 @@ def process_pdf_file(uploaded_file):
                             num_columns_header = len(unique_columns)
                             cleaned_data_rows = []
                             for row in data_rows:
+                                # 確保行數據與標題長度匹配
                                 if len(row) > num_columns_header:
                                     cleaned_data_rows.append(row[:num_columns_header])
                                 elif len(row) < num_columns_header:
@@ -270,7 +304,7 @@ def process_pdf_file(uploaded_file):
                                 st.error(f"原始處理後數據範例: {processed_table[:2]} (前兩行)")
                                 st.error(f"生成的唯一欄位名稱: {unique_columns}")
                         else:
-                            st.info(f"表格 **{table_idx + 1}** 沒有數據行。")
+                            st.info(f"頁面 {page_num + 1} 的表格 **{table_idx + 1}** 沒有數據行。")
 
                 except Exception as e_table:
                     st.error(f"頁面 **{page_num + 1}** 處理表格時發生錯誤: `{e_table}`")
@@ -330,7 +364,6 @@ def main():
                 st.info("沒有找到可以計算學分的科目。")
 
             # 提供下載選項 (僅下載總結數據，而非原始表格)
-            # 這裡我們只提供計算出的科目列表下載，如果需要原始表格，可以再加回去
             if calculated_courses:
                 csv_data = courses_df.to_csv(index=False, encoding='utf-8-sig')
                 st.download_button(
